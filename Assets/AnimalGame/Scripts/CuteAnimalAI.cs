@@ -7,88 +7,187 @@ using static CuteAnimalAI;
 
 public class CuteAnimalAI : MonoBehaviour
 {
-    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive } // ✅ Added PassiveVeryEasy
-    public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena }
+    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, Companion }
+    public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich }
 
-    [Header("⚙️ General AI Settings")]
-    [Tooltip("Type of AI - Passive animals flee, Aggressive animals chase/attack.")]
+    [Header("🧠 AI Behavior Type")]
+    [Tooltip("Overall behavior pattern of this animal.")]
     public AIType aiType = AIType.Passive;
 
-    [Tooltip("Animal species (used for grouping/herding behavior).")]
+    [Tooltip("Species for grouping or flocking behavior.")]
     public AnimalType animalType = AnimalType.Zebra;
 
-    [Tooltip("Enable flocking behavior for group movement.")]
+    [Tooltip("Enable flocking (alignment, cohesion, separation) with same-type neighbors.")]
     public bool enableFlocking = false;
 
     [Header("🚶 Movement Speeds")]
+    [Tooltip("Wander speed (all AI types).")]
     public float wanderSpeed = 2f;
+
+    [Tooltip("Chase speed (Aggressive types).")]
     public float chaseSpeed = 4f;
+
+    [Tooltip("Flee speed (Passive types).")]
     public float fleeSpeed = 5f;
+
+    [Tooltip("Turning speed in degrees/sec.")]
     public float rotationSpeed = 90f;
 
-    [Header("📏 Ranges & Detection")]
+    [Header("📏 Detection & Ranges")]
+    [Tooltip("Player detection radius (Aggressive types).")]
     public float detectionRange = 6f;
+
+    [Tooltip("Flee trigger distance (Passive types).")]
     public float fleeRange = 5f;
+
+    [Tooltip("Stop distance for NavMeshAgent.")]
     public float stopDistance = 2f;
+
+    [Tooltip("Radius for random wander target selection.")]
     public float wanderRadius = 10f;
 
-    [Header("🤝 Herding & Flocking")]
+    [Header("🤝 Flocking Settings")]
+    [Tooltip("Min spacing to avoid crowding.")]
     public float repulsionDistance = 2f;
+    [Tooltip("Repulsion strength when too close.")]
     public float repulsionStrength = 1.5f;
-    public float alignmentWeight = 1.0f;
-    public float cohesionWeight = 1.0f;
+    [Tooltip("Weight of neighbor direction alignment.")]
+    public float alignmentWeight = 1f;
+    [Tooltip("Weight of neighbor cohesion.")]
+    public float cohesionWeight = 1f;
 
     [Header("⚔️ Combat Settings")]
+    [Tooltip("Melee attack range.")]
     public float attackRange = 1.5f;
+    [Tooltip("Cooldown between attacks.")]
     public float attackCooldown = 2f;
+    [Tooltip("Damage per attack.")]
     public int attackDamage = 10;
+    [Tooltip("Duration of attack animation/state.")]
+    public float attackDuration = 0.6f;
 
-    [Header("⏳ Behavior Timers")]
+    [Header("⏱️ Timing Settings")]
+    [Tooltip("Wander decision interval.")]
     public float wanderInterval = 4f;
+    [Tooltip("Knockback duration when damaged.")]
     public float knockbackDuration = 0.2f;
+    [Tooltip("Minimum rest duration.")]
+    public float restMinDuration = 5f;
+    [Tooltip("Maximum rest duration.")]
+    public float restMaxDuration = 10f;
 
-    [Header("🏜️ Navigation & Waypoints")]
+    [Header("📍 Navigation")]
+    [Tooltip("Optional patrol points for wander.")]
     public Transform[] wanderPoints;
 
-    [Header("😱 Panic & Flee Settings")]
+    [Header("😱 Flee & Panic")]
+    [Tooltip("Radius to alert herd to flee.")]
     public float herdPanicRadius = 10f;
+    [Tooltip("Max attempts to find valid flee target.")]
     public int fleeAttempts = 6;
-    public float navMeshEdgeThreshold = 2.0f;
+    [Tooltip("Min edge distance to avoid NavMesh edges.")]
+    public float navMeshEdgeThreshold = 2f;
+    [Tooltip("Prediction time for player movement.")]
     public float playerPredictionTime = 1.5f;
+    [Tooltip("Forward projection distance when fleeing.")]
     public float playerForwardPredictionDistance = 2f;
+    [Tooltip("Speed multiplier for initial flee burst.")]
+    public float fleeBurstMultiplier = 1.5f;
+    [Tooltip("Duration of initial flee burst.")]
+    public float fleeBurstDuration = 0.5f;
+    [Tooltip("Zigzag lateral speed.")]
     public float zigzagSpeed = 6f;
+    [Tooltip("Zigzag lateral offset strength.")]
     public float zigzagStrength = 0.5f;
 
-    [Header("🧓 Passive Herd Settings")]
+    [Header("🧓 Herding (Passive)")]
+    [Tooltip("Radius to detect/join herd.")]
     public float herdJoinRadius = 15f;
+    [Tooltip("Preferred spacing within herd.")]
     public float herdPreferredDistance = 5f;
+    [Tooltip("Speed when regrouping.")]
     public float herdRegroupSpeed = 3f;
 
-    [Header("🏡 Home Area Settings")]
-    [Tooltip("Radius around the spawn point where animals can rest/eat.")]
+    [Header("🏡 Home Area")]
+    [Tooltip("Home radius around spawn.")]
     public float homeRadius = 8f;
 
-    // Components
+    [Header("🐗 Charge (AggressiveType1)")]
+    [Tooltip("Windup duration before charge.")]
+    public float windupDuration = 1.5f;
+    [Tooltip("Charge speed.")]
+    public float chargeSpeed = 8f;
+    [Tooltip("Charge duration.")]
+    public float chargeDuration = 2f;
+    [Tooltip("Charge impact radius.")]
+    public float chargeDamageRadius = 1.2f;
+    [Tooltip("Charge damage.")]
+    public int chargeDamage = 30;
+    [Tooltip("Max charge attempts.")]
+    public int maxChargeAttempts = 3;
+    [Tooltip("Cooldown before charge attempts reset.")]
+    public float chargeCooldownDuration = 4f;
+
+    [Header("😤 Retaliation (AggressiveType2)")]
+    [Tooltip("Delay to switch from flee to hunt after provoked.")]
+    public float retaliationDelay = 3f;
+
+    [Header("👤 Companion Settings")]
+    [Tooltip("Distance at or above which Companion follows directly.")]
+    public float companionFollowDistance = 3f;
+    [Tooltip("Orbit radius around player when idling.")]
+    public float companionCircleRadius = 2f;
+    [Tooltip("Orbit speed in radians/sec.")]
+    public float companionCircleSpeed = 1.5f;
+    [Tooltip("Threshold squared for updating NavMesh destination to avoid jitter.")]
+    public float companionJitterThresholdSq = 0.04f; // 0.2 units squared
+    [Tooltip("Speed factor for smooth rotation.")]
+    public float companionRotationLerp = 5f;
+
+    [Header("👤 Companion Idle Tweaks")]
+    [Tooltip("How often (sec) to pick a new idle spot.")]
+    public float idleMoveInterval = 3f;
+    [Tooltip("Min radius around player for idle moves.")]
+    public float idleMinRadius = 1.5f;
+    [Tooltip("Max radius around player for idle moves.")]
+    public float idleMaxRadius = 3f;
+
+    [Header("🐦 Companion Flocking")]
+    [Tooltip("Neighbor radius for flocking.")]
+    public float flockNeighborRadius = 2f;
+    [Tooltip("Separation weight (avoid crowding).")]
+    public float flockSeparationWeight = 1.5f;
+    [Tooltip("Cohesion weight (stay together).")]
+    public float flockCohesionWeight = 1f;
+    [Tooltip("Alignment weight (match direction).")]
+    public float flockAlignmentWeight = 1f;
+
+    [Tooltip("Enable NavMeshAgent auto-braking.")]
+    public bool enableAutoBraking = true;
+
+    // Companion-specific runtime
+    [HideInInspector] public Vector3 lastCompanionTarget;
+    // Hidden runtime state
     [HideInInspector] public NavMeshAgent agent;
     [HideInInspector] public Health health;
     [HideInInspector] public CuteAnimalAnimHandler animHandler;
     [HideInInspector] public Transform player;
     [HideInInspector] public StateMachine StateMachine;
-
-    // Internal Timers
+    [HideInInspector] public Vector3 spawnPosition;
     [HideInInspector] public float wanderTimer;
     [HideInInspector] public float attackTimer;
-
-    // Knockback state
-    [HideInInspector] public Vector3 knockbackVector;
     [HideInInspector] public float knockbackTimer;
-
-    // ✅ Remember spawn point (home area)
-    [HideInInspector] public Vector3 spawnPosition;
+    [HideInInspector] public Vector3 knockbackVector;
+    [HideInInspector] public bool wasProvoked;
+    [HideInInspector] public float provokedTimer;
+    [HideInInspector] public int currentChargeAttempts;
+    [HideInInspector] public bool isChargeCooldownActive;
+    [HideInInspector] public float chargeCooldownTimer;
 
     private void Start()
     {
         agent = GetComponent<NavMeshAgent>();
+        agent.autoBraking = enableAutoBraking;
         animHandler = GetComponentInChildren<CuteAnimalAnimHandler>();
         health = GetComponent<Health>();
         player = GameObject.FindGameObjectWithTag("Player")?.transform;
@@ -101,7 +200,15 @@ public class CuteAnimalAI : MonoBehaviour
         wanderTimer = wanderInterval;
 
         StateMachine = new StateMachine();
-        StateMachine.ChangeState(new AIWanderState(this));
+        switch (aiType)
+        {
+            case AIType.Companion:
+                StateMachine.ChangeState(new AICompanionFollowState(this));
+                break;
+            default:
+                StateMachine.ChangeState(new AIWanderState(this));
+                break;
+        }
 
         if (health != null)
             health.onDeath.AddListener(OnDeath);
@@ -109,21 +216,64 @@ public class CuteAnimalAI : MonoBehaviour
 
     private void Update()
     {
+        // 1) Death check
         if (health != null && health.IsDead)
         {
             StateMachine.ChangeState(new AIDeadState(this));
             return;
         }
 
-        if (knockbackTimer > 0)
+        // 2) Knockback resolution
+        if (knockbackTimer > 0f)
         {
             knockbackTimer -= Time.deltaTime;
             agent.Move(knockbackVector * Time.deltaTime);
             return;
         }
 
+        // 3) Cool down your basic attack timer
         attackTimer -= Time.deltaTime;
+
+        // 4) AggressiveType1 charge cooldown
+        if (aiType == AIType.AggressiveType1 && isChargeCooldownActive)
+        {
+            chargeCooldownTimer -= Time.deltaTime;
+            if (chargeCooldownTimer <= 0f)
+            {
+                isChargeCooldownActive = false;
+                currentChargeAttempts = 0;
+            }
+        }
+
+        // 5) AggressiveType2 “retaliation delay” logic
+        if (aiType == AIType.AggressiveType2 && wasProvoked)
+        {
+            provokedTimer -= Time.deltaTime;
+            if (provokedTimer <= 0f)
+            {
+                // --- STEP 4: reset the provoked flag so future hits re-trigger flee ---
+                wasProvoked = false;
+
+                // Now transition to chase or attack depending on range
+                float dist = Vector3.Distance(transform.position, player.position);
+                if (dist <= attackRange)
+                    StateMachine.ChangeState(new AIAttackState(this));
+                else
+                    StateMachine.ChangeState(new AIChaseState(this));
+                return;
+            }
+        }
+
+        // 6) Otherwise, let the normal state machine run
         StateMachine.Update();
+
+    }
+
+    public void SmoothRotate(Vector3 dir, float lerpSpeed)
+    {
+        if (dir.sqrMagnitude < 0.01f) return;
+        Quaternion target = Quaternion.LookRotation(dir);
+        transform.rotation = Quaternion.Slerp(transform.rotation, target, Time.deltaTime * lerpSpeed);
     }
 
     public float DistanceToPlayer()
@@ -165,10 +315,24 @@ public class CuteAnimalAI : MonoBehaviour
 
     public void ApplyKnockback(Vector3 direction)
     {
+
+        if (aiType == AIType.AggressiveType2 && !(StateMachine.CurrentState is AIAttackState))
+        {
+            wasProvoked = true;
+            provokedTimer = retaliationDelay;
+            StateMachine.ChangeState(new AIFleeThenHuntState(this));
+        }
+
+        if (aiType == AIType.AggressiveType1)
+        {
+            // immediately interrupt whatever we were doing and start re-charging
+            StateMachine.ChangeState(new AIWindupState(this));
+        }
+
         knockbackVector = direction;
         knockbackTimer = knockbackDuration;
         agent.ResetPath();
-        animHandler?.SetAnimation(eCuteAnimalAnims.DAMAGE);
+        //animHandler?.SetAnimation(eCuteAnimalAnims.DAMAGE);
     }
 
     void OnDeath()
@@ -239,7 +403,10 @@ public class AIRestState : IState
         restTimer = Random.Range(5f, 10f);
 
         // 2) Pick eat vs rest
-        isEating = Random.value > 0.5f;
+        if (ai.aiType == AIType.AggressiveType1 || ai.aiType == AIType.AggressiveType2)
+            isEating = true;
+        else
+            isEating = Random.value > 0.5f;
 
         // 3) Halt the agent so it doesn't idle‑override our animation
         ai.agent.ResetPath();
@@ -257,19 +424,22 @@ public class AIRestState : IState
         float dist = ai.DistanceToPlayer();
 
         // ——— Player logic ———
-        if ((ai.aiType == AIType.Passive || ai.aiType == AIType.PassiveEasy || ai.aiType == AIType.PassiveVeryEasy) && dist <= ai.fleeRange)
+        if (ai.aiType == AIType.Passive || ai.aiType == AIType.PassiveEasy || ai.aiType == AIType.PassiveVeryEasy)
         {
-            ai.agent.isStopped = false;
-            ai.StateMachine.ChangeState(
-                ai.aiType == AIType.PassiveEasy
-                    ? new AIFleeSimpleState(ai)
-                    : ai.aiType == AIType.PassiveVeryEasy
-                        ? new AIFleeVeryEasyState(ai)
-                        : new AIFleeState(ai)
-            );
-            return;
+            if (dist <= ai.fleeRange)
+            {
+                ai.agent.isStopped = false;
+                ai.StateMachine.ChangeState(
+                    ai.aiType == AIType.PassiveEasy
+                        ? new AIFleeSimpleState(ai)
+                        : ai.aiType == AIType.PassiveVeryEasy
+                            ? new AIFleeVeryEasyState(ai)
+                            : new AIFleeState(ai)
+                );
+                return;
+            }
         }
-        if (ai.aiType == CuteAnimalAI.AIType.Aggressive)
+        else if (ai.aiType == AIType.Aggressive)
         {
             if (dist <= ai.attackRange)
             {
@@ -281,6 +451,28 @@ public class AIRestState : IState
             {
                 ai.agent.isStopped = false;
                 ai.StateMachine.ChangeState(new AIChaseState(ai));
+                return;
+            }
+        }
+        else if (ai.aiType == AIType.AggressiveType2 && ai.wasProvoked)
+        {
+            if (dist <= ai.attackRange)
+            {
+                ai.StateMachine.ChangeState(new AIAttackState(ai));
+                return;
+            }
+            else if (dist <= ai.detectionRange)
+            {
+                ai.StateMachine.ChangeState(new AIChaseState(ai));
+                return;
+            }
+        }
+        else if (ai.aiType == AIType.AggressiveType1)
+        {
+            if (!ai.isChargeCooldownActive && dist <= ai.attackRange)
+            {
+                ai.agent.isStopped = true;
+                ai.StateMachine.ChangeState(new AIWindupState(ai));
                 return;
             }
         }
@@ -312,6 +504,7 @@ public class AIRestState : IState
             ai.StateMachine.ChangeState(new AIWanderState(ai));
         }
     }
+
 
     public void Exit()
     {
@@ -392,6 +585,28 @@ public class AIWanderState : IState
             return;
         }
 
+        if (ai.aiType == AIType.AggressiveType1)
+        {
+            if (!ai.isChargeCooldownActive && distanceToPlayer <= ai.attackRange)
+            {
+                ai.StateMachine.ChangeState(new AIWindupState(ai));
+                return;
+            }
+        }
+
+        if (ai.aiType == AIType.AggressiveType2 && ai.wasProvoked)
+        {
+            if (distanceToPlayer <= ai.attackRange)
+            {
+                ai.StateMachine.ChangeState(new AIAttackState(ai));
+                return;
+            }
+            else if (distanceToPlayer <= ai.detectionRange)
+            {
+                ai.StateMachine.ChangeState(new AIChaseState(ai));
+                return;
+            }
+        }
 
         // ✅ Aggressive → chase or attack if close
         if (ai.aiType == CuteAnimalAI.AIType.Aggressive)
@@ -728,7 +943,7 @@ public class AIKnockbackState : IState
     public void Enter()
     {
         timer = ai.knockbackDuration;
-        ai.animHandler?.SetAnimation(eCuteAnimalAnims.DAMAGE);
+        //ai.animHandler?.SetAnimation(eCuteAnimalAnims.DAMAGE);
         ai.agent.ResetPath();
     }
 
@@ -764,6 +979,128 @@ public class AIDeadState : IState
 }
 
 #endregion
+
+
+public class AIWindupState : IState
+{
+    private CuteAnimalAI ai;
+    private float timer;
+
+    public AIWindupState(CuteAnimalAI ai) { this.ai = ai; }
+
+    public void Enter()
+    {
+        timer = ai.windupDuration;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
+        ai.agent.ResetPath();
+    }
+
+    public void Update()
+    {
+        if (ai.player == null)
+        {
+            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            return;
+        }
+
+        Vector3 dir = ai.player.position - ai.transform.position;
+        dir.y = 0;
+        ai.RotateTowards(dir);
+
+        timer -= Time.deltaTime;
+        if (timer <= 0)
+        {
+            ai.StateMachine.ChangeState(new AIChargeState(ai));
+        }
+    }
+
+    public void Exit() { }
+}
+
+public class AIChargeState : IState
+{
+    private CuteAnimalAI ai;
+    private float timer;
+    private Vector3 chargeDirection;
+    private bool hasHitPlayer;
+
+    public AIChargeState(CuteAnimalAI ai) { this.ai = ai; }
+
+    public void Enter()
+    {
+        ai.currentChargeAttempts++;
+        ai.agent.speed = ai.chargeSpeed;
+        ai.agent.ResetPath();
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+        timer = ai.chargeDuration;
+
+        if (ai.player != null)
+        {
+            chargeDirection = (ai.player.position - ai.transform.position).normalized;
+            chargeDirection.y = 0;
+            ai.RotateTowards(chargeDirection);
+        }
+    }
+
+    public void Update()
+    {
+        timer -= Time.deltaTime;
+
+        Vector3 worldDir = (ai.player.position - ai.transform.position).normalized; // charge
+                                                                                    // OR your fleeDir…
+
+        // 1) Make sure you rotate over time:
+        ai.RotateTowards(worldDir);
+
+        // 2) Then only move straight ahead:
+        Vector3 forwardMove = ai.transform.forward * ai.chargeSpeed * Time.deltaTime;
+        ai.agent.Move(forwardMove);
+
+        // Collision check
+        if (!hasHitPlayer && ai.player != null)
+        {
+            float distance = Vector3.Distance(ai.transform.position, ai.player.position);
+            if (distance <= ai.chargeDamageRadius)
+            {
+                if (ai.player.TryGetComponent<Health>(out var hp))
+                {
+                    hp.TakeDamage(ai.chargeDamage);
+                    hasHitPlayer = true;
+                }
+            }
+        }
+
+        if (ai.currentChargeAttempts >= ai.maxChargeAttempts)
+        {
+            ai.isChargeCooldownActive = true;
+            ai.chargeCooldownTimer = ai.chargeCooldownDuration;
+            ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+            return;
+        }
+
+        if (timer <= 0 || hasHitPlayer)
+        {
+            float distanceToPlayer = ai.DistanceToPlayer();
+
+            if (distanceToPlayer <= ai.attackRange && ai.player != null)
+            {
+                ai.StateMachine.ChangeState(new AIWindupState(ai)); // follow-up attack
+            }
+            else if (distanceToPlayer <= ai.detectionRange && ai.player != null)
+            {
+                ai.StateMachine.ChangeState(new AIChaseState(ai)); // keep pursuing
+            }
+            else
+            {
+                ai.StateMachine.ChangeState(new AIRestState(ai)); // return to chill
+            }
+        }
+
+    }
+
+    public void Exit() { }
+}
+
 
 public class AIFleeSimpleState : IState
 {
@@ -876,5 +1213,253 @@ public class AIFleeVeryEasyState : IState
 
     public void Exit() { }
 }
+
+public class AIReturnToBaseState : IState
+{
+    private CuteAnimalAI ai;
+    private float restTimer = 4f;
+
+    public AIReturnToBaseState(CuteAnimalAI ai)
+    {
+        this.ai = ai;
+    }
+
+    public void Enter()
+    {
+        ai.agent.SetDestination(ai.spawnPosition);
+        ai.agent.speed = ai.wanderSpeed;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.WALK);
+    }
+
+    public void Update()
+    {
+        float distanceToSpawn = Vector3.Distance(ai.transform.position, ai.spawnPosition);
+
+        if (distanceToSpawn > ai.homeRadius * 0.5f)
+            return; // Keep walking home
+
+        ai.agent.isStopped = true;
+        restTimer -= Time.deltaTime;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.EAT);
+
+        if (restTimer <= 0f)
+        {
+            ai.StateMachine.ChangeState(new AIRestState(ai));
+        }
+    }
+
+    public void Exit() { }
+}
+
+public class AIFleeThenHuntState : IState
+{
+    private CuteAnimalAI ai;
+    private float timer;
+    private Vector3 fleeDirection;
+    private const float DESTINATION_THRESHOLD_SQ = 0.25f; // 0.5 units²
+
+    public AIFleeThenHuntState(CuteAnimalAI ai)
+    {
+        this.ai = ai;
+    }
+
+    public void Enter()
+    {
+        // 1) Initialize timers and movement
+        timer = ai.retaliationDelay;
+        ai.agent.speed = ai.fleeSpeed;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+
+        // 2) Turn off obstacle avoidance to prevent collisions with player
+        ai.agent.obstacleAvoidanceType = ObstacleAvoidanceType.NoObstacleAvoidance;
+
+        // 3) Pick one fixed flee direction at the moment of provocation
+        fleeDirection = (ai.transform.position - ai.player.position).normalized;
+    }
+
+    public void Update()
+    {
+        // 1) Countdown
+        timer -= Time.deltaTime;
+
+        // 2) While fleeing
+        if (timer > 0f)
+        {
+            Vector3 candidate = ai.transform.position + fleeDirection * ai.fleeRange;
+            if (NavMesh.SamplePosition(candidate, out var hit, ai.fleeRange, NavMesh.AllAreas))
+            {
+                // Only update path if the new target is significantly different
+                if ((hit.position - ai.agent.destination).sqrMagnitude > DESTINATION_THRESHOLD_SQ)
+                {
+                    ai.agent.SetDestination(hit.position);
+                }
+            }
+            ai.RotateTowards(fleeDirection);
+            return;
+        }
+
+        // 3) Once timer expires and we're safely away, switch to chase
+        if (ai.DistanceToPlayer() >= ai.fleeRange * 1.2f)
+        {
+            // Re-enable obstacle avoidance
+            ai.agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
+            ai.StateMachine.ChangeState(new AIChaseState(ai));
+        }
+    }
+
+    public void Exit()
+    {
+        // Ensure avoidance is back to default
+        ai.agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
+    }
+}
+
+public class AICompanionState : IState
+{
+    private CuteAnimalAI ai;
+    private float angle = 0f;
+
+    public AICompanionState(CuteAnimalAI ai) { this.ai = ai; }
+
+    public void Enter()
+    {
+        ai.agent.stoppingDistance = ai.companionCircleRadius;
+        ai.agent.speed = ai.wanderSpeed;
+    }
+
+    public void Update()
+    {
+        if (ai.player == null)
+        {
+            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            return;
+        }
+
+        // advance the circling angle
+        angle += Time.deltaTime * ai.companionCircleSpeed;
+
+        // compute target position on the circle
+        Vector3 offset = new Vector3(
+          Mathf.Cos(angle),
+          0,
+          Mathf.Sin(angle)
+        ) * ai.companionCircleRadius;
+
+        Vector3 target = ai.player.position + offset;
+        ai.agent.SetDestination(target);
+        ai.UpdateMovementAnimation();
+    }
+
+    public void Exit() { }
+}
+
+public class AICompanionIdleState : IState
+{
+    private CuteAnimalAI ai;
+    private float angle;
+    private Vector3 currentTarget;
+    private float idleTimer;
+    private Vector3 idleTarget;
+
+    public AICompanionIdleState(CuteAnimalAI ai) { this.ai = ai; }
+
+    private void PickIdleTarget()
+    {
+        float angle = Random.value * Mathf.PI * 2f;
+        float radius = Random.Range(ai.idleMinRadius, ai.idleMaxRadius);
+        Vector3 offset = new Vector3(Mathf.Cos(angle), 0, Mathf.Sin(angle)) * radius;
+        idleTarget = ai.player.position + offset;
+    }
+
+    private Vector3 ComputeFlockOffset()
+    {
+        var sep = Vector3.zero; var coh = Vector3.zero; var ali = Vector3.zero;
+        int count = 0;
+        foreach (var col in Physics.OverlapSphere(ai.transform.position, ai.flockNeighborRadius))
+            if (col.TryGetComponent<CuteAnimalAI>(out var other) && other.aiType == AIType.Companion && other != ai)
+            {
+                Vector3 toOther = ai.transform.position - other.transform.position;
+                sep += toOther.normalized / toOther.magnitude;
+                coh += other.transform.position;
+                ali += other.agent.velocity.normalized;
+                count++;
+            }
+        if (count == 0) return Vector3.zero;
+        coh = ((coh / count) - ai.transform.position).normalized;
+        ali = (ali / count).normalized;
+        return sep * ai.flockSeparationWeight + coh * ai.flockCohesionWeight + ali * ai.flockAlignmentWeight;
+    }
+
+
+    public void Enter()
+    {
+        idleTimer = 0f;
+        PickIdleTarget();
+        ai.agent.stoppingDistance = ai.companionCircleRadius;
+        ai.agent.speed = ai.wanderSpeed;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.WALK);
+    }
+
+    public void Update()
+    {
+        // 1) switch back to Follow if too far
+        if (ai.DistanceToPlayer() > ai.companionFollowDistance * 1.2f)
+        { ai.StateMachine.ChangeState(new AICompanionFollowState(ai)); return; }
+
+        // 2) pick a new idle point as timer elapses
+        idleTimer -= Time.deltaTime;
+        if (idleTimer <= 0f)
+        {
+            PickIdleTarget();
+            idleTimer = ai.idleMoveInterval * Random.Range(0.8f, 1.2f);
+        }
+
+        // 3) compute combined target with flocking
+        Vector3 flockOffset = ComputeFlockOffset();
+        Vector3 desired = idleTarget + flockOffset;
+
+        // 4) jitter reduction & NavMesh set
+        if ((desired - ai.lastCompanionTarget).sqrMagnitude > ai.companionJitterThresholdSq)
+        {
+            ai.agent.SetDestination(desired);
+            ai.lastCompanionTarget = desired;
+        }
+
+        // 5) smooth rotation toward velocity
+        ai.SmoothRotate(ai.agent.velocity, ai.companionRotationLerp);
+
+    }
+    public void Exit() { }
+}
+
+/// <summary>
+/// Companion follows directly until within followDistance, then idles by circling.
+/// </summary>
+public class AICompanionFollowState : IState
+{
+    private CuteAnimalAI ai;
+    public AICompanionFollowState(CuteAnimalAI ai) { this.ai = ai; }
+    public void Enter() 
+    { 
+        ai.agent.stoppingDistance = ai.companionFollowDistance;
+        ai.agent.speed = ai.chaseSpeed;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+    }
+    public void Update()
+    {
+        float dist = ai.DistanceToPlayer();
+        if (dist > ai.companionFollowDistance)
+        {
+            ai.agent.SetDestination(ai.player.position);
+            ai.SmoothRotate(ai.player.position - ai.transform.position, ai.companionRotationLerp);
+        }
+        else
+        {
+            ai.StateMachine.ChangeState(new AICompanionIdleState(ai));
+        }
+    }
+    public void Exit() { }
+}
+
 
 

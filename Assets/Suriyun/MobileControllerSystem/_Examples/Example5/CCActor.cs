@@ -17,6 +17,8 @@ public class StateMachine
 {
     private IState currentState;
 
+    public IState CurrentState => currentState;
+
     public void ChangeState(IState newState)
     {
         currentState?.Exit();
@@ -58,11 +60,14 @@ public class CCActor : MonoBehaviour
     public bool disableAttackRotation = false;
 
     [Header("Jump Settings")]
-    public float jumpHeight = 3f;
     public float gravity = -9.81f;
 
     [Header("Attack Settings")]
     public float attackCooldown = 1f;
+
+    private Vector3 currentVelocity;  // New: for smooth acceleration
+    [Header("Advanced Movement")]
+    public float acceleration = 10f;  // New: tweak this for snappier or slower response
 
     [Header("Auto Attack Settings")]
     public float autoAttackRadius = 2f;
@@ -118,13 +123,17 @@ public class CCActor : MonoBehaviour
         isRunning = inputVec.magnitude >= runThreshold;
         float currentSpeed = isRunning ? runSpeed : walkSpeed;
 
-        // Camera-relative moveDirection
+        // Camera-relative movement direction
         Vector3 camF = Camera.main.transform.forward;
         Vector3 camR = Camera.main.transform.right;
         camF.y = camR.y = 0f;
         camF.Normalize(); camR.Normalize();
         Vector3 inputDir = camF * inputVec.y + camR * inputVec.x;
-        moveDirection = inputDir.normalized * currentSpeed;
+
+        // ✅ Smooth acceleration
+        Vector3 targetVelocity = inputDir.normalized * currentSpeed;
+        currentVelocity = Vector3.Lerp(currentVelocity, targetVelocity, acceleration * Time.deltaTime);
+        moveDirection = currentVelocity;
 
         // Update timers
         attackTimer -= Time.deltaTime;
@@ -151,15 +160,18 @@ public class CCActor : MonoBehaviour
 
     public void Move(Vector3 vel)
     {
-        // Apply gravity
+        // Vertical movement
         if (!controller.isGrounded)
             verticalVelocity += gravity * Time.deltaTime;
         else if (verticalVelocity < 0f)
             verticalVelocity = -2f;
 
-        Vector3 motion = vel * Time.deltaTime;
-        motion.y = verticalVelocity * Time.deltaTime;
-        controller.Move(motion);
+        // Apply movement
+        Vector3 horizontalVelocity = new Vector3(vel.x, 0f, vel.z);
+        Vector3 verticalVelocityVec = Vector3.up * verticalVelocity;
+
+        Vector3 finalVelocity = (horizontalVelocity + verticalVelocityVec) * Time.deltaTime;
+        controller.Move(finalVelocity);
     }
 
     public void ApplyKnockback(Vector3 direction)
@@ -218,7 +230,6 @@ public class PlayerIdleState : IState
         }
         // Transitions
         if (actor.HasMovementInput()) { actor.StateMachine.ChangeState(new PlayerMoveState(actor)); return; }
-        if (actor.CanJump()) { actor.StateMachine.ChangeState(new PlayerJumpState(actor)); return; }
         if (actor.CanAttack()) { actor.StateMachine.ChangeState(new PlayerAttackState(actor)); return; }
     }
     public void Exit() { }
@@ -251,31 +262,7 @@ public class PlayerMoveState : IState
         }
         // Transitions
         if (!actor.HasMovementInput()) { actor.StateMachine.ChangeState(new PlayerIdleState(actor)); return; }
-        if (actor.CanJump()) { actor.StateMachine.ChangeState(new PlayerJumpState(actor)); return; }
         if (actor.CanAttack()) { actor.StateMachine.ChangeState(new PlayerAttackState(actor)); return; }
-    }
-    public void Exit() { }
-}
-
-public class PlayerJumpState : IState
-{
-    private CCActor actor;
-    private float jumpVel;
-    public PlayerJumpState(CCActor actor) { this.actor = actor; }
-    public void Enter()
-    {
-        jumpVel = Mathf.Sqrt(actor.jumpHeight * -2f * actor.gravity);
-        actor.verticalVelocity = jumpVel;
-        actor.animHandler?.SetAnimation(eCuteAnimalAnims.JUMP);
-    }
-    public void Update()
-    {
-        actor.Move(actor.moveDirection);
-        if (actor.IsGrounded() && actor.verticalVelocity < 0f)
-        {
-            actor.StateMachine.ChangeState(
-                actor.HasMovementInput() ? (IState)new PlayerMoveState(actor) : new PlayerIdleState(actor));
-        }
     }
     public void Exit() { }
 }
@@ -306,8 +293,19 @@ public class PlayerAttackState : IState
 
         Collider[] hits = Physics.OverlapSphere(actor.transform.position + actor.transform.forward, 1.5f);
         foreach (var h in hits)
+        {
             if (h.TryGetComponent<Health>(out var hp))
+            {
                 hp.TakeDamage(10);
+
+                // NEW: Apply knockback to enemies if they have CuteAnimalAI
+                if (hp.TryGetComponent<CuteAnimalAI>(out var ai))
+                {
+                    Vector3 knockbackDir = (h.transform.position - actor.transform.position).normalized;
+                    ai.ApplyKnockback(knockbackDir);
+                }
+            }
+        }
 
         actor.attackTimer = actor.attackCooldown;
     }
