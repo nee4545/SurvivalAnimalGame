@@ -1,4 +1,6 @@
-﻿using System.Collections.Generic;
+﻿using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.AI;
 using static CuteAnimalAI;
@@ -7,7 +9,7 @@ using static CuteAnimalAI;
 
 public class CuteAnimalAI : MonoBehaviour
 {
-    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, Companion }
+    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AgressiveType3, Companion }
     public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich }
 
     [Header("🧠 AI Behavior Type")]
@@ -162,6 +164,38 @@ public class CuteAnimalAI : MonoBehaviour
     [Tooltip("Alignment weight (match direction).")]
     public float flockAlignmentWeight = 1f;
 
+    [Header("🔍 Companion Targeting")]
+    [Tooltip("Tag used to identify other AI to chase/attack")]
+    public string targetTag = "Animal";
+
+    [Header("🔍 Companion Combat")]
+    [Tooltip("How far the companion can see and start chasing other animals.")]
+    public float companionDetectionRange = 8f;
+
+    [Header("🔗 Companion Tether")]
+    [Tooltip("Max distance from player the companion is allowed to stray for chasing.")]
+    public float maxChaseDistance = 8f;
+
+    [Header("🐺 Pack Hunting (AggressiveType3)")]
+    [Tooltip("Radius to call pack members for coordinated attack.")]
+    public float packCallRadius = 15f;
+
+    [Tooltip("Max pack members to coordinate with.")]
+    public int maxPackSize = 4;
+
+    [Tooltip("Time to coordinate before synchronized attack.")]
+    public float coordinationTime = 2f;
+
+
+    // runtime
+    private Renderer _rend;
+    private MaterialPropertyBlock _mpb;
+    private Color _originalTint;
+    private string _colorProp = "_BaseColor";
+
+    // Runtime cache
+    [HideInInspector] public List<Transform> potentialTargets;
+
     [Tooltip("Enable NavMeshAgent auto-braking.")]
     public bool enableAutoBraking = true;
 
@@ -210,8 +244,54 @@ public class CuteAnimalAI : MonoBehaviour
                 break;
         }
 
+        if (aiType == AIType.Companion)
+        {
+            // Cache all other AIs once at start
+            var objs = GameObject.FindGameObjectsWithTag(targetTag);
+            potentialTargets = new List<Transform>(objs.Select(o => o.transform));
+        }
+
+        // grab renderer & property-block
+        _rend = GetComponentInChildren<Renderer>();
+        if (_rend != null)
+        {
+            _colorProp = _rend.sharedMaterial.HasProperty("_BaseColor")
+                ? "_BaseColor"
+                : "_Color";
+
+            // Grab the ORIGINAL tint straight from the material
+            _originalTint = _rend.sharedMaterial.GetColor(_colorProp);
+
+            // Now create a fresh MPB for overrides
+            _mpb = new MaterialPropertyBlock();
+        }
+
         if (health != null)
             health.onDeath.AddListener(OnDeath);
+    }
+
+    public Transform GetClosestAnimalTarget()
+    {
+        Transform best = null;
+        float bestDist = Mathf.Infinity;
+
+        foreach (var t in potentialTargets)
+        {
+            if (t == null) continue;
+
+            // Skip dead animals
+            if (t.TryGetComponent<Health>(out var h) && h.IsDead)
+                continue;
+
+            float d = Vector3.Distance(transform.position, t.position);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                best = t;
+            }
+        }
+
+        return (best != null && bestDist <= companionDetectionRange) ? best : null;
     }
 
     private void Update()
@@ -228,6 +308,12 @@ public class CuteAnimalAI : MonoBehaviour
         {
             knockbackTimer -= Time.deltaTime;
             agent.Move(knockbackVector * Time.deltaTime);
+            return;
+        }
+
+        if (StateMachine.CurrentState is AIChargeState)
+        {
+            StateMachine.Update();
             return;
         }
 
@@ -329,10 +415,29 @@ public class CuteAnimalAI : MonoBehaviour
             StateMachine.ChangeState(new AIWindupState(this));
         }
 
+        if (_rend != null)
+            StartCoroutine(FlashRed());
+
         knockbackVector = direction;
         knockbackTimer = knockbackDuration;
         agent.ResetPath();
         //animHandler?.SetAnimation(eCuteAnimalAnims.DAMAGE);
+    }
+
+    private IEnumerator FlashRed()
+    {
+        // 1) Override to red
+        _mpb.SetColor(_colorProp, Color.red);
+        _rend.SetPropertyBlock(_mpb);
+
+        yield return new WaitForSeconds(0.2f);
+
+        // 2) Restore original tint
+        _mpb.SetColor(_colorProp, _originalTint);
+        _rend.SetPropertyBlock(_mpb);
+
+        // 3) Now clear the block entirely
+        _rend.SetPropertyBlock(new MaterialPropertyBlock());
     }
 
     void OnDeath()
@@ -469,7 +574,7 @@ public class AIRestState : IState
         }
         else if (ai.aiType == AIType.AggressiveType1)
         {
-            if (!ai.isChargeCooldownActive && dist <= ai.attackRange)
+            if (!ai.isChargeCooldownActive && dist <= ai.detectionRange)
             {
                 ai.agent.isStopped = true;
                 ai.StateMachine.ChangeState(new AIWindupState(ai));
@@ -587,7 +692,7 @@ public class AIWanderState : IState
 
         if (ai.aiType == AIType.AggressiveType1)
         {
-            if (!ai.isChargeCooldownActive && distanceToPlayer <= ai.attackRange)
+            if (!ai.isChargeCooldownActive && distanceToPlayer <= ai.detectionRange)
             {
                 ai.StateMachine.ChangeState(new AIWindupState(ai));
                 return;
@@ -1022,83 +1127,105 @@ public class AIChargeState : IState
     private CuteAnimalAI ai;
     private float timer;
     private Vector3 chargeDirection;
+    private Vector3 overshootPoint;
     private bool hasHitPlayer;
+
+    // How far past the player we want to go (in units)
+    private float overshootDistance => ai.chargeSpeed * ai.chargeDuration * 1f;
 
     public AIChargeState(CuteAnimalAI ai) { this.ai = ai; }
 
     public void Enter()
     {
+        // 1) Increase attempt count & set up agent
         ai.currentChargeAttempts++;
         ai.agent.speed = ai.chargeSpeed;
         ai.agent.ResetPath();
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
-        timer = ai.chargeDuration;
+        ai.agent.updateRotation = false;  // we'll rotate ourselves
 
+        timer = ai.chargeDuration;
+        hasHitPlayer = false;
+
+        // 2) Compute a one‐time direction & overshoot point
         if (ai.player != null)
         {
-            chargeDirection = (ai.player.position - ai.transform.position).normalized;
-            chargeDirection.y = 0;
-            ai.RotateTowards(chargeDirection);
+            chargeDirection = (ai.player.position - ai.transform.position)
+                                .Flat()                   // extension method to zero Y
+                                .normalized;
+            // target a point just past the player's current pos:
+            overshootPoint = ai.player.position + chargeDirection * overshootDistance;
         }
+        else
+        {
+            chargeDirection = ai.transform.forward;
+            overshootPoint = ai.transform.position + chargeDirection * overshootDistance;
+        }
+
+        ai.transform.rotation = Quaternion.LookRotation(chargeDirection);
+
+        // 3) Tell the NavMeshAgent to run full‐speed toward that overshoot point
+        ai.agent.stoppingDistance = 0f;
+        ai.agent.SetDestination(overshootPoint);
     }
 
     public void Update()
     {
         timer -= Time.deltaTime;
 
-        Vector3 worldDir = (ai.player.position - ai.transform.position).normalized; // charge
-                                                                                    // OR your fleeDir…
+        Quaternion targetRot = Quaternion.LookRotation(chargeDirection);
+        ai.transform.rotation = Quaternion.RotateTowards(
+            ai.transform.rotation,
+            targetRot,
+            ai.companionRotationLerp * Time.deltaTime
+        );
 
-        // 1) Make sure you rotate over time:
-        ai.RotateTowards(worldDir);
 
-        // 2) Then only move straight ahead:
-        Vector3 forwardMove = ai.transform.forward * ai.chargeSpeed * Time.deltaTime;
-        ai.agent.Move(forwardMove);
-
-        // Collision check
+        // 2) Collision check on the way through
         if (!hasHitPlayer && ai.player != null)
         {
-            float distance = Vector3.Distance(ai.transform.position, ai.player.position);
-            if (distance <= ai.chargeDamageRadius)
+            float distToPlayer = Vector3.Distance(ai.transform.position, ai.player.position);
+            if (distToPlayer <= ai.chargeDamageRadius)
             {
                 if (ai.player.TryGetComponent<Health>(out var hp))
-                {
                     hp.TakeDamage(ai.chargeDamage);
-                    hasHitPlayer = true;
-                }
+                hasHitPlayer = true;
             }
         }
 
-        if (ai.currentChargeAttempts >= ai.maxChargeAttempts)
+        // 3) Termination: either we've timed out, reached the overshoot, or hit the player
+        bool reachedOvershoot = !ai.agent.pathPending
+                                && ai.agent.remainingDistance <= 0.1f;
+        if (timer <= 0f || reachedOvershoot || hasHitPlayer)
         {
-            ai.isChargeCooldownActive = true;
-            ai.chargeCooldownTimer = ai.chargeCooldownDuration;
-            ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
-            return;
-        }
-
-        if (timer <= 0 || hasHitPlayer)
-        {
-            float distanceToPlayer = ai.DistanceToPlayer();
-
-            if (distanceToPlayer <= ai.attackRange && ai.player != null)
+            // If we still have more charges available and close enough, we can wind up again...
+            if (ai.currentChargeAttempts < ai.maxChargeAttempts
+                && Vector3.Distance(ai.transform.position, ai.player.position) <= ai.attackRange)
             {
-                ai.StateMachine.ChangeState(new AIWindupState(ai)); // follow-up attack
+                ai.StateMachine.ChangeState(new AIWindupState(ai));
             }
-            else if (distanceToPlayer <= ai.detectionRange && ai.player != null)
+            // Otherwise fall back to a normal chase
+            else if (Vector3.Distance(ai.transform.position, ai.player.position) <= ai.detectionRange)
             {
-                ai.StateMachine.ChangeState(new AIChaseState(ai)); // keep pursuing
+                ai.StateMachine.ChangeState(new AIChaseState(ai));
             }
             else
             {
-                ai.StateMachine.ChangeState(new AIRestState(ai)); // return to chill
+                ai.StateMachine.ChangeState(new AIRestState(ai));
             }
         }
-
     }
 
-    public void Exit() { }
+    public void Exit()
+    {
+        // Restore auto‐rotation so other states can use it
+        ai.agent.updateRotation = true;
+    }
+}
+
+public static class Vector3Extensions
+{
+    public static Vector3 Flat(this Vector3 v) => new Vector3(v.x, 0f, v.z);
 }
 
 
@@ -1402,6 +1529,18 @@ public class AICompanionIdleState : IState
 
     public void Update()
     {
+
+        // Detection → Chase
+        if (ai.DistanceToPlayer() <= ai.maxChaseDistance)
+        {
+            var prey = ai.GetClosestAnimalTarget();
+            if (prey != null)
+            {
+                ai.StateMachine.ChangeState(new CompanionChaseState(ai, prey));
+                return;
+            }
+        }
+
         // 1) switch back to Follow if too far
         if (ai.DistanceToPlayer() > ai.companionFollowDistance * 1.2f)
         { ai.StateMachine.ChangeState(new AICompanionFollowState(ai)); return; }
@@ -1447,6 +1586,17 @@ public class AICompanionFollowState : IState
     }
     public void Update()
     {
+
+        if (ai.DistanceToPlayer() <= ai.maxChaseDistance)
+        {
+            var prey = ai.GetClosestAnimalTarget();
+            if (prey != null)
+            {
+                ai.StateMachine.ChangeState(new CompanionChaseState(ai, prey));
+                return;
+            }
+        }
+
         float dist = ai.DistanceToPlayer();
         if (dist > ai.companionFollowDistance)
         {
@@ -1459,6 +1609,152 @@ public class AICompanionFollowState : IState
         }
     }
     public void Exit() { }
+}
+
+
+public class CompanionChaseState : IState
+{
+    private CuteAnimalAI ai;
+    private Transform target;
+
+    public CompanionChaseState(CuteAnimalAI ai, Transform target)
+    {
+        this.ai = ai;
+        this.target = target;
+    }
+
+    public void Enter()
+    {
+        ai.agent.speed = ai.chaseSpeed;
+        ai.agent.stoppingDistance = ai.attackRange;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+    }
+
+    public void Update()
+    {
+        if (target == null
+        || (target.TryGetComponent<Health>(out var ht) && ht.IsDead)
+        || ai.DistanceToPlayer() > ai.maxChaseDistance)
+        {
+            ai.StateMachine.ChangeState(new AICompanionFollowState(ai));
+            return;
+        }
+
+        if (target == null)
+        {
+            ai.StateMachine.ChangeState(new AICompanionFollowState(ai));
+            return;
+        }
+
+        float dist = Vector3.Distance(ai.transform.position, target.position);
+
+        // Too far? drop chase
+        if (dist > ai.companionDetectionRange)
+        {
+            ai.StateMachine.ChangeState(new AICompanionFollowState(ai));
+            return;
+        }
+
+        // In attack range? transition to attack (we’ll build this next)
+        if (dist <= ai.attackRange)
+        {
+            ai.StateMachine.ChangeState(new CompanionAttackState(ai, target));
+            return;
+        }
+
+        // Otherwise keep chasing
+        ai.agent.SetDestination(target.position);
+        ai.SmoothRotate(target.position - ai.transform.position, ai.companionRotationLerp);
+    }
+
+    public void Exit() { }
+}
+
+public class CompanionAttackState : IState
+{
+    private CuteAnimalAI ai;
+    private Transform target;
+    private float timer;
+
+    public CompanionAttackState(CuteAnimalAI ai, Transform target)
+    {
+        this.ai = ai;
+        this.target = target;
+    }
+
+    public void Enter()
+    {
+        // Stop moving and turn off NavMeshAgent auto-rotation
+        ai.agent.ResetPath();
+        ai.agent.updateRotation = false;
+
+        // Play attack anim & deal damage immediately
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.ATTACK);
+        if (target != null && target.TryGetComponent<Health>(out var h))
+            h.TakeDamage(ai.attackDamage);
+
+        timer = ai.attackCooldown;
+    }
+
+    public void Update()
+    {
+
+        if (target == null
+       || (target.TryGetComponent<Health>(out var h) && h.IsDead)
+       || ai.DistanceToPlayer() > ai.maxChaseDistance)
+        {
+            ai.StateMachine.ChangeState(new AICompanionFollowState(ai));
+            return;
+        }
+
+        // Always smoothly face the target (if it still exists)
+        if (target != null)
+        {
+            var dir = (target.position - ai.transform.position).normalized;
+            ai.SmoothRotate(dir, ai.companionRotationLerp);
+        }
+
+        // Bail if target gone or too far from player
+        if (target == null ||
+            ai.DistanceToPlayer() > ai.maxChaseDistance)
+        {
+            ExitAndFollow();
+            return;
+        }
+
+        float dist = Vector3.Distance(ai.transform.position, target.position);
+
+        // If out of melee but still near, go back to chase
+        if (dist > ai.attackRange && dist <= ai.companionDetectionRange)
+        {
+            ai.StateMachine.ChangeState(new CompanionChaseState(ai, target));
+            return;
+        }
+
+        // Cooldown countdown
+        timer -= Time.deltaTime;
+        if (timer <= 0f)
+        {
+            if (dist <= ai.attackRange)
+                ai.StateMachine.ChangeState(new CompanionAttackState(ai, target));
+            else if (dist <= ai.companionDetectionRange)
+                ai.StateMachine.ChangeState(new CompanionChaseState(ai, target));
+            else
+                ExitAndFollow();
+        }
+    }
+
+    public void Exit()
+    {
+        // Re-enable NavMeshAgent rotation so later states can use it
+        ai.agent.updateRotation = true;
+    }
+
+    private void ExitAndFollow()
+    {
+        Exit();
+        ai.StateMachine.ChangeState(new AICompanionFollowState(ai));
+    }
 }
 
 
