@@ -7,9 +7,10 @@ using static CuteAnimalAI;
 
 #region MAIN AI SCRIPT
 
+[RequireComponent(typeof(NavMeshAgent))]
 public class CuteAnimalAI : MonoBehaviour
 {
-    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AgressiveType3, Companion }
+    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AggressiveType3, Companion , AggressiveJumping}
     public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich }
 
     [Header("🧠 AI Behavior Type")]
@@ -185,10 +186,77 @@ public class CuteAnimalAI : MonoBehaviour
 
     [Tooltip("Time to coordinate before synchronized attack.")]
     public float coordinationTime = 2f;
+    [Header("🐺 Pack Hunting (AggressiveType3)")]
+    [Tooltip("Radius of circle around player for intercept points.")]
+    public float packChaseRadius = 6f;
 
+    [Header("🪵 Jumping (AggressiveJumping & PassiveJumping)")]
+    [Tooltip("Peak height of jump arc (world units).")]
+    public float jumpHeight = 3f;
+    [Tooltip("Time to complete a jump (sec).")]
+    public float jumpDuration = 0.7f;
+    [Tooltip("How far around the target to search for a valid landing spot on NavMesh.")]
+    public float jumpLandingProbeRadius = 2f;
+    [Tooltip("How long the aggressive jumper chases before returning home.")]
+    public float chaseDuration = 5f;
+
+    [Header("Passive Jumping")]
+    [Tooltip("Tag used for designer-placed perches (trees/rocks).")]
+    public string jumpSpotTag = "JumpSpot";
+
+    [Tooltip("How close to the foot of the JumpSpot before jumping up.")]
+    public float jumpSpotApproachRadius = 1.25f;
+    [Header("Jumping Cooldowns")]
+    [Tooltip("How long to chill on the perch before allowed to jump down again (AggressiveJumping).")]
+    public float perchCooldown = 1.0f;
+
+    [Tooltip("Horizontal speed used to scale jump duration for long jumps upward.")]
+    public float jumpHorizontalSpeed = 5f; // try 4–7
+    public float minJumpDuration = 0.65f;
+    public float maxJumpDuration = 1.8f;
+
+    [Header("🐺 Pack Collapse & Lunge")]
+    [Tooltip("Seconds to shrink ring from packChaseRadius down to near attack range.")]
+    public float packCollapseSeconds = 3.0f;           // time to tighten the ring
+    [Tooltip("Minimum radius factor of packChaseRadius when fully collapsed (e.g., 0.4 = 40%)")]
+    public float packMinRadiusFactor = 0.45f;          // how tight the ring gets
+    [Tooltip("Attack commit cone around an agent’s slot angle (deg).")]
+    public float packAttackWindowDeg = 25f;            // commit window
+    [Tooltip("Cooldown before this agent can lunge again.")]
+    public float packLungeCooldown = 2.2f;             // per-wolf stagger
+    [Tooltip("Dash speed when lunging.")]
+    public float packLungeSpeed = 1.5f;                // multiplier on chaseSpeed
+    [Tooltip("How long a lunge lasts max (sec).")]
+    public float packLungeDuration = 0.9f;
+    [Tooltip("Distance past player to aim during lunge (overshoot)")]
+    public float packLungeOvershoot = 1.0f;
+
+    [Header("🐺 Pack Orbiting")]
+    public bool packOrbitingEnabled = true;
+    [Tooltip("How fast slot angles drift around the player (deg/sec).")]
+    public float packOrbitAngularSpeedDeg = 35f;
+    [Tooltip("How often to repath toward the moving slot (sec).")]
+    public float packRepathInterval = 0.25f;
+
+    [Header("🐺 Rear Overtake Boost")]
+    [Tooltip("Speed multiplier when a wolf is mostly behind the player.")]
+    public float packRearBoost = 1.35f;
+    [Tooltip("Rear wedge around 180° where boost applies.")]
+    public float packRearAngleWindowDeg = 60f;
+
+
+    [HideInInspector] public List<Transform> jumpSpots = new();
+    [HideInInspector] public Transform currentJumpSpot;
+
+    [HideInInspector] public bool jumpSessionActive;
+    [HideInInspector] public float jumpSessionDeadline;
+
+    [HideInInspector] public float nextPackAttackReadyTime; // per-wolf CD
+
+    private bool _oneTimeInitDone;
 
     // runtime
-    private Renderer _rend;
+    private Renderer[] _renderers;
     private MaterialPropertyBlock _mpb;
     private Color _originalTint;
     private string _colorProp = "_BaseColor";
@@ -218,57 +286,279 @@ public class CuteAnimalAI : MonoBehaviour
     [HideInInspector] public bool isChargeCooldownActive;
     [HideInInspector] public float chargeCooldownTimer;
 
-    private void Start()
+    [SerializeField] private string playerTag = "Player";
+    private float _playerLookupCooldown = 0f;
+
+    private bool TryResolvePlayer(bool force = false)
     {
-        agent = GetComponent<NavMeshAgent>();
-        agent.autoBraking = enableAutoBraking;
+        Transform candidate = null;
+
+        // 1) Prefer PlayerLocator.Instance if it points to a live scene object
+        var inst = PlayerLocator.Instance;
+        if (inst != null && inst.gameObject.activeInHierarchy && inst.gameObject.scene.IsValid())
+            candidate = inst;
+
+        // 2) Otherwise pick the *closest active* Player-tagged object (not a prefab / inactive)
+        if (candidate == null)
+        {
+            var gos = GameObject.FindGameObjectsWithTag(playerTag);
+            Transform best = null;
+            float bestSq = float.PositiveInfinity;
+
+            foreach (var go in gos)
+            {
+                if (!go || !go.activeInHierarchy || !go.scene.IsValid()) continue;
+                float sq = (go.transform.position - transform.position).sqrMagnitude;
+                if (sq < bestSq) { bestSq = sq; best = go.transform; }
+            }
+
+            candidate = best;
+        }
+
+        if (candidate == null) return false;
+
+        if (force || player == null || player != candidate)
+            player = candidate;
+
+        return true;
+    }
+
+    private void Awake()
+    {
+        StateMachine = new StateMachine();
+
+        agent = GetComponent<UnityEngine.AI.NavMeshAgent>();
         animHandler = GetComponentInChildren<CuteAnimalAnimHandler>();
         health = GetComponent<Health>();
-        player = GameObject.FindGameObjectWithTag("Player")?.transform;
+        player = PlayerLocator.Instance;
 
+        // Gather all renderers (SkinnedMeshRenderer/MeshRenderer)
+        _renderers = GetComponentsInChildren<Renderer>(true);
+        _mpb = new MaterialPropertyBlock();
+
+        // Choose the right color property based on the first material we find
+        if (_renderers.Length > 0 && _renderers[0] != null && _renderers[0].sharedMaterial != null)
+        {
+            _colorProp = _renderers[0].sharedMaterial.HasProperty("_BaseColor") ? "_BaseColor" : "_Color";
+            _originalTint = _renderers[0].sharedMaterial.GetColor(_colorProp);
+        }
+    }
+
+
+    private void Start()
+    {
+        if (_oneTimeInitDone) return;
+        _oneTimeInitDone = true;
+
+        // Agent defaults (once is enough)
+        agent.autoBraking = enableAutoBraking;
         agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
         agent.avoidancePriority = Random.Range(30, 70);
         agent.autoBraking = true;
 
-        spawnPosition = transform.position;
-        wanderTimer = wanderInterval;
-
-        StateMachine = new StateMachine();
-        switch (aiType)
+        // Jump spots list can be built once
+        if (aiType == AIType.AggressiveJumping)
         {
-            case AIType.Companion:
-                StateMachine.ChangeState(new AICompanionFollowState(this));
-                break;
-            default:
-                StateMachine.ChangeState(new AIWanderState(this));
-                break;
+            var spots = GameObject.FindGameObjectsWithTag(jumpSpotTag);
+            jumpSpots = new List<Transform>(spots.Select(s => s.transform));
         }
-
-        if (aiType == AIType.Companion)
-        {
-            // Cache all other AIs once at start
-            var objs = GameObject.FindGameObjectsWithTag(targetTag);
-            potentialTargets = new List<Transform>(objs.Select(o => o.transform));
-        }
-
-        // grab renderer & property-block
-        _rend = GetComponentInChildren<Renderer>();
-        if (_rend != null)
-        {
-            _colorProp = _rend.sharedMaterial.HasProperty("_BaseColor")
-                ? "_BaseColor"
-                : "_Color";
-
-            // Grab the ORIGINAL tint straight from the material
-            _originalTint = _rend.sharedMaterial.GetColor(_colorProp);
-
-            // Now create a fresh MPB for overrides
-            _mpb = new MaterialPropertyBlock();
-        }
+      
 
         if (health != null)
             health.onDeath.AddListener(OnDeath);
     }
+
+    private void OnEnable()
+    {
+        if (!Application.isPlaying) return;
+
+        TryResolvePlayer();
+
+        // (Re)subscribe events for pooled objects
+        if (health == null) health = GetComponent<Health>();
+        if (health != null) health.onDeath.AddListener(OnDeath);
+
+        // Bring this AI back to life in a safe way
+        ResetRuntimeForSpawn();
+    }
+
+    private void OnDisable()
+    {
+        // During editor teardown, NavMesh/agents may already be invalid; do nothing.
+        if (!Application.isPlaying) return;
+
+        // Stop any running coroutines safely
+        StopAllCoroutines();
+        if (_spawnInitCo != null) { StopCoroutine(_spawnInitCo); _spawnInitCo = null; }
+
+        // Unhook events (so pooling doesn’t stack listeners)
+        if (health != null) health.onDeath.RemoveListener(OnDeath);
+
+        // Touch agent only if truly valid
+        if (agent != null)
+        {
+            if (agent.enabled && agent.isOnNavMesh)
+            {
+                // Safe only in this case:
+                agent.ResetPath();
+                agent.isStopped = true;
+            }
+
+            // Optional: disable to avoid stray callbacks during pooling
+            // agent.enabled = false;
+        }
+    }
+
+
+    private Coroutine _spawnInitCo;
+
+
+
+    private void ClearAllPropertyBlocks()
+    {
+        if (_renderers == null) return;
+        for (int i = 0; i < _renderers.Length; i++)
+            if (_renderers[i]) _renderers[i].SetPropertyBlock(null);
+    }
+
+    private void SetTintOnAll(Color c)
+    {
+        if (_renderers == null) return;
+        for (int i = 0; i < _renderers.Length; i++)
+        {
+            var r = _renderers[i];
+            if (!r || !r.sharedMaterial) continue;
+
+            // If some meshes use different color props, you can detect per-renderer:
+            // var prop = r.sharedMaterial.HasProperty("_BaseColor") ? "_BaseColor" : "_Color";
+            // _mpb.Clear(); _mpb.SetColor(prop, c); r.SetPropertyBlock(_mpb);
+
+            _mpb.Clear();
+            _mpb.SetColor(_colorProp, c);
+            r.SetPropertyBlock(_mpb);
+        }
+    }
+
+
+    private bool EnsureAgentOnNavMesh(float sampleRadius = 6f)
+    {
+        if (agent == null) agent = GetComponent<UnityEngine.AI.NavMeshAgent>();
+        if (agent == null) return false;
+
+        if (!agent.enabled) agent.enabled = true;
+
+        // Already on mesh?
+        if (agent.isOnNavMesh) return true;
+
+        // Try to snap near current position
+        if (UnityEngine.AI.NavMesh.SamplePosition(transform.position, out var hit, sampleRadius, UnityEngine.AI.NavMesh.AllAreas))
+        {
+            agent.Warp(hit.position);
+            return agent.isOnNavMesh;
+        }
+
+        return false;
+    }
+
+    private IEnumerator WaitForNavMeshAndFinishSpawn()
+    {
+        // Try for a short time (e.g. 0.5s) to find/snap to NavMesh
+        float end = Time.time + 0.5f;
+        while (Time.time < end)
+        {
+            if (EnsureAgentOnNavMesh(6f)) break;
+            yield return null;
+        }
+
+        if (!agent || !agent.enabled || !agent.isOnNavMesh)
+        {
+            // Give up safely — disable to avoid errors; idle anim so it doesn't look broken
+            if (agent) agent.enabled = false;
+            animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
+            _spawnInitCo = null;
+            yield break;
+        }
+
+        // Now it's safe to clear paths & proceed
+        agent.ResetPath();
+        FinishSpawnState();
+        _spawnInitCo = null;
+    }
+
+    private void FinishSpawnState()
+    {
+        // Pick the correct initial state per spawn
+        if (aiType == AIType.Companion)
+            StateMachine.ChangeState(new AICompanionFollowState(this));
+        else if (aiType == AIType.AggressiveJumping)
+            StateMachine.ChangeState(new AIPerchRestState(this));  // perched until triggered
+        else
+            StateMachine.ChangeState(new AIWanderState(this));
+    }
+
+    private void ResetRuntimeForSpawn()
+    {
+        // Stop any old work (jump arcs, deferred inits, etc.)
+        StopAllCoroutines();
+        if (_spawnInitCo != null) { StopCoroutine(_spawnInitCo); _spawnInitCo = null; }
+
+        // New “home” for this spawn
+        spawnPosition = transform.position;
+
+        // Reset timers/flags
+        wanderTimer = wanderInterval;
+        attackTimer = 0f;
+        knockbackTimer = 0f;
+        knockbackVector = Vector3.zero;
+
+        wasProvoked = false; provokedTimer = 0f;
+        currentChargeAttempts = 0;
+        isChargeCooldownActive = false; chargeCooldownTimer = 0f;
+
+        jumpSessionActive = false; jumpSessionDeadline = 0f; currentJumpSpot = null;
+        nextPackAttackReadyTime = 0f;
+
+        // Agent sanity (configure, but don't touch pathing until on NavMesh)
+        if (agent == null) agent = GetComponent<UnityEngine.AI.NavMeshAgent>();
+        if (agent != null)
+        {
+            agent.enabled = true;
+            agent.updateRotation = true;
+            agent.autoBraking = enableAutoBraking;
+            agent.avoidancePriority = Random.Range(30, 70);
+            agent.stoppingDistance = stopDistance;
+            agent.speed = wanderSpeed;
+            // DO NOT set isStopped or ResetPath yet.
+        }
+
+        // Health: full restore
+        if (health == null) health = GetComponent<Health>();
+        if (health != null) health.ResetHealth();
+
+        // Visuals — restore tint & clear overrides
+        ClearAllPropertyBlocks();
+
+        // Companion retarget cache (optional)
+        if (aiType == AIType.Companion)
+        {
+            var objs = GameObject.FindGameObjectsWithTag(targetTag);
+            potentialTargets = new List<Transform>(objs.Select(o => o.transform));
+        }
+
+        // Ensure we’re on the NavMesh before calling ResetPath / setting state
+        if (EnsureAgentOnNavMesh(6f))
+        {
+            agent.isStopped = false;  // safe now
+            agent.ResetPath();        // safe now
+            FinishSpawnState();       // choose initial state and (if needed) SetDestination
+        }
+        else
+        {
+            // Defer finishing until we can get onto the mesh
+            _spawnInitCo = StartCoroutine(WaitForNavMeshAndFinishSpawn());
+        }
+    }
+
 
     public Transform GetClosestAnimalTarget()
     {
@@ -294,8 +584,202 @@ public class CuteAnimalAI : MonoBehaviour
         return (best != null && bestDist <= companionDetectionRange) ? best : null;
     }
 
+    public IEnumerator DespawnOrDestroyAfter(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        var po = GetComponent<PooledObject>();
+        if (po) po.Despawn(); else Destroy(gameObject);
+    }
+
+    public void Death()
+    {
+        StartCoroutine(DespawnOrDestroyAfter(0.25f));
+    }
+
+    public Transform GetNearestJumpSpot(Vector3 from)
+    {
+        Transform best = null;
+        float bestDist = Mathf.Infinity;
+        foreach (var t in jumpSpots)
+        {
+            if (t == null) continue;
+            float d = Vector3.SqrMagnitude(t.position - from);
+            if (d < bestDist) { bestDist = d; best = t; }
+        }
+        return best;
+    }
+
+    public Vector3 GetJumpSpotFoot(Transform spot)
+    {
+        // NavMesh point near the JumpSpot to stand before jumping up
+        return SampleOnNavmesh(spot.position, jumpLandingProbeRadius * 4f);
+    }
+
+    public Vector3 SampleOnNavmesh(Vector3 desired, float maxDistance)
+    {
+        NavMeshHit hit;
+        if (NavMesh.SamplePosition(desired, out hit, maxDistance, NavMesh.AllAreas))
+            return hit.position;
+        if (NavMesh.SamplePosition(desired, out hit, maxDistance * 3f, NavMesh.AllAreas))
+            return hit.position;
+        if (NavMesh.SamplePosition(transform.position, out hit, maxDistance * 3f, NavMesh.AllAreas))
+            return hit.position;
+
+        // last resort: keep the current agent position if it’s valid, else leave as-is
+        if (agent.enabled && agent.isOnNavMesh)
+            return agent.nextPosition;
+        return transform.position;
+    }
+
+    public IEnumerator JumpArc(Vector3 from, Vector3 to, float height, float duration, bool landOnNavMesh = true)
+    {
+        // Disable while we animate the arc
+        if (agent.enabled) agent.enabled = false;
+
+        // Face jump direction
+        Vector3 flatDir = (to - from); flatDir.y = 0f;
+        if (flatDir.sqrMagnitude > 0.0001f)
+            transform.rotation = Quaternion.LookRotation(flatDir.normalized);
+
+        // Animate parabola
+        float elapsed = 0f;
+        while (elapsed < duration)
+        {
+            float t = Mathf.Clamp01(elapsed / duration);
+
+            // smooth horizontal/vertical blend
+            Vector3 pos = Vector3.Lerp(from, to, t);
+            // nice hump (0..π)
+            pos.y = Mathf.Lerp(from.y, to.y, t) + height * Mathf.Sin(Mathf.PI * t);
+
+            transform.position = pos;
+
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
+
+        if (!landOnNavMesh)
+        {
+            // Stay exactly at 'to' (perch), keep agent disabled
+            yield return null;
+            yield break;
+        }
+
+
+        // Find a safe landing on the NavMesh (spiral search)
+        Vector3 land;
+        if (!TryFindNavMeshPoint(to, jumpLandingProbeRadius, jumpLandingProbeRadius * 6f, out land))
+        {
+            // last resort: around current position
+            TryFindNavMeshPoint(transform.position, jumpLandingProbeRadius * 6f, jumpLandingProbeRadius * 12f, out land);
+        }
+
+        // Re-enable & warp; give it one frame to register on the mesh
+        agent.enabled = true;
+#if UNITY_2022_1_OR_NEWER
+        bool warped = agent.Warp(land);
+#else
+    bool warped = true; agent.Warp(land);
+#endif
+        if (!warped)
+        {
+            // if warp somehow failed, keep trying for a couple frames
+            for (int i = 0; i < 5 && !agent.isOnNavMesh; i++)
+            {
+                if (NavMesh.SamplePosition(land, out var hit, jumpLandingProbeRadius * 8f, NavMesh.AllAreas))
+                    agent.Warp(hit.position);
+                yield return null;
+            }
+        }
+
+        // Let the agent settle on the mesh this frame
+        yield return null;
+    }
+
+    // Spiral/ring search so we never return off-mesh
+    private bool TryFindNavMeshPoint(Vector3 center, float startRadius, float maxRadius, out Vector3 result)
+    {
+        if (NavMesh.SamplePosition(center, out var hit, startRadius, NavMesh.AllAreas))
+        {
+            result = hit.position; return true;
+        }
+
+        float r = Mathf.Max(0.5f, startRadius);
+        while (r <= maxRadius)
+        {
+            // 12 points around the ring
+            for (int i = 0; i < 12; i++)
+            {
+                float ang = i * 30f;
+                Vector3 p = center + Quaternion.Euler(0f, ang, 0f) * (Vector3.forward * r);
+                if (NavMesh.SamplePosition(p, out hit, 1.0f, NavMesh.AllAreas))
+                {
+                    result = hit.position; return true;
+                }
+            }
+            r *= 1.6f;
+        }
+
+        result = center;
+        return false;
+    }
+
+
+    public Vector3 GetPerchFootPointForReturn()
+    {
+        // Prefer a designer perch if we have one
+        Transform perch = currentJumpSpot ?? GetNearestJumpSpot(spawnPosition);
+        if (perch != null)
+        {
+            // Push outward from the perch toward where we came from
+            Vector3 outward = (transform.position - perch.position).Flat();
+            if (outward.sqrMagnitude < 0.01f) outward = transform.forward;
+            outward.Normalize();
+
+            // Try a few radii; prefer a point lower than the perch (so we don’t “climb up” first)
+            float[] radii = { jumpSpotApproachRadius * 1.2f, jumpSpotApproachRadius * 1.8f, jumpSpotApproachRadius * 2.5f, jumpSpotApproachRadius * 3.5f };
+            Vector3 fallback = Vector3.zero;
+            foreach (float r in radii)
+            {
+                Vector3 candidate = perch.position + outward * r;
+                if (NavMesh.SamplePosition(candidate, out var hit, 1.0f, NavMesh.AllAreas))
+                {
+                    if (hit.position.y <= perch.position.y - 0.1f) // prefer ground below the perch
+                        return hit.position;
+                    fallback = hit.position; // keep something usable
+                }
+            }
+
+            // Fallback: generic foot near perch
+            if (fallback != Vector3.zero) return fallback;
+            return GetJumpSpotFoot(perch);
+        }
+
+        // No perch transform? sample around spawn
+        return SampleOnNavmesh(spawnPosition, jumpLandingProbeRadius * 4f);
+    }
+
+
+
     private void Update()
     {
+
+        var inst = PlayerLocator.Instance;
+        if (inst != null && inst != player && inst.gameObject.activeInHierarchy && inst.gameObject.scene.IsValid())
+            player = inst;
+
+
+        // Keep trying to bind to the player for pre-placed AIs
+        if (player == null)
+        {
+            _playerLookupCooldown -= Time.deltaTime;
+            if (_playerLookupCooldown <= 0f)
+            {
+                TryResolvePlayer();
+                _playerLookupCooldown = 1f; // try once per second
+            }
+        }
+
         // 1) Death check
         if (health != null && health.IsDead)
         {
@@ -350,9 +834,61 @@ public class CuteAnimalAI : MonoBehaviour
             }
         }
 
+        float distance = DistanceToPlayer();
+
+        if (aiType == AIType.AggressiveJumping
+            && jumpSessionActive
+            && Time.time >= jumpSessionDeadline)
+        {
+            var s = StateMachine.CurrentState;
+            if (!(s is AIJumpReturnHomeState) && !(s is AIPerchRestState))
+            {
+                StateMachine.ChangeState(new AIJumpReturnHomeState(this));
+                return;
+            }
+        }
+
+
+        // --- Only allow jump re-triggers when NOT in a session ---
+        // New (only trigger from perch state)
+        if (!jumpSessionActive && StateMachine.CurrentState is AIPerchRestState)
+        {
+            if (aiType == AIType.AggressiveJumping && distance <= detectionRange)
+            {
+                StateMachine.ChangeState(new AIJumpAttackState(this));
+                return;
+            }
+        }
+
         // 6) Otherwise, let the normal state machine run
         StateMachine.Update();
 
+    }
+
+    public bool HasCompletePath(Vector3 target)
+    {
+        if (!agent.enabled || !agent.isOnNavMesh) return false;
+        var path = new NavMeshPath();
+        agent.CalculatePath(target, path);
+        return path.status == NavMeshPathStatus.PathComplete;
+    }
+
+    // Returns the farthest point toward 'target' that has a complete path (on this island),
+    // stepping back along the segment. Returns 'current' if nothing works.
+    public Vector3 FindReachableToward(Vector3 target, int steps = 6)
+    {
+        if (!agent.enabled || !agent.isOnNavMesh) return transform.position;
+        Vector3 start = agent.transform.position;
+        for (int i = steps; i >= 1; i--)
+        {
+            float t = (float)i / steps;                    // 1.0 .. 1/steps
+            Vector3 probe = Vector3.Lerp(start, target, t);
+            if (NavMesh.SamplePosition(probe, out var hit, jumpLandingProbeRadius * 2f, NavMesh.AllAreas))
+            {
+                if (HasCompletePath(hit.position)) return hit.position;
+            }
+        }
+        return start;
     }
 
     public void SmoothRotate(Vector3 dir, float lerpSpeed)
@@ -415,8 +951,8 @@ public class CuteAnimalAI : MonoBehaviour
             StateMachine.ChangeState(new AIWindupState(this));
         }
 
-        if (_rend != null)
-            StartCoroutine(FlashRed());
+        if (_renderers != null)
+            TriggerFlashRed();
 
         knockbackVector = direction;
         knockbackTimer = knockbackDuration;
@@ -424,20 +960,44 @@ public class CuteAnimalAI : MonoBehaviour
         //animHandler?.SetAnimation(eCuteAnimalAnims.DAMAGE);
     }
 
-    private IEnumerator FlashRed()
+    private Coroutine _flashCo;
+
+    public void TriggerFlashRed(float seconds = 0.2f)
     {
-        // 1) Override to red
-        _mpb.SetColor(_colorProp, Color.red);
-        _rend.SetPropertyBlock(_mpb);
+        if (_flashCo != null) StopCoroutine(_flashCo);
+        _flashCo = StartCoroutine(FlashRedAll(seconds));
+    }
 
-        yield return new WaitForSeconds(0.2f);
+    private IEnumerator FlashRedAll(float seconds)
+    {
+        if (_renderers == null || _renderers.Length == 0) yield break;
+        if (_mpb == null) _mpb = new MaterialPropertyBlock();
 
-        // 2) Restore original tint
-        _mpb.SetColor(_colorProp, _originalTint);
-        _rend.SetPropertyBlock(_mpb);
+        // 1) Tint all renderers red
+        for (int i = 0; i < _renderers.Length; i++)
+        {
+            var r = _renderers[i];
+            if (!r || !r.sharedMaterial) continue;
 
-        // 3) Now clear the block entirely
-        _rend.SetPropertyBlock(new MaterialPropertyBlock());
+            // Pick the right color property per material
+            string prop = r.sharedMaterial.HasProperty("_BaseColor") ? "_BaseColor"
+                        : r.sharedMaterial.HasProperty("_Color") ? "_Color"
+                        : null;
+
+            if (prop == null) continue;
+
+            _mpb.Clear();
+            _mpb.SetColor(prop, Color.red);
+            r.SetPropertyBlock(_mpb);
+        }
+
+        yield return new WaitForSeconds(seconds);
+
+        // 2) Clear all overrides so materials go back to their own tints
+        for (int i = 0; i < _renderers.Length; i++)
+            if (_renderers[i]) _renderers[i].SetPropertyBlock(null);
+
+        _flashCo = null;
     }
 
     void OnDeath()
@@ -526,7 +1086,12 @@ public class AIRestState : IState
 
     public void Update()
     {
+        // ——— Timer to go back to wandering ———
+        restTimer -= Time.deltaTime;
+
         float dist = ai.DistanceToPlayer();
+
+        Debug.Log("DistanceToPlayer" + dist);
 
         // ——— Player logic ———
         if (ai.aiType == AIType.Passive || ai.aiType == AIType.PassiveEasy || ai.aiType == AIType.PassiveVeryEasy)
@@ -581,6 +1146,15 @@ public class AIRestState : IState
                 return;
             }
         }
+        else if(ai.aiType == AIType.AggressiveType3)
+        {
+            if (dist <= ai.detectionRange)
+            {
+                // start pack call
+                ai.StateMachine.ChangeState(new AIPackCallState(ai));
+                return;
+            }
+        }
 
         // ——— Spacing logic ———
         Vector3 spacing = ComputeRestSpacing();
@@ -601,8 +1175,7 @@ public class AIRestState : IState
         // ——— Otherwise stay in rest/eat pose ———
         ai.agent.isStopped = true;
 
-        // ——— Timer to go back to wandering ———
-        restTimer -= Time.deltaTime;
+        
         if (restTimer <= 0f)
         {
             ai.agent.isStopped = false;
@@ -688,6 +1261,16 @@ public class AIWanderState : IState
                         : new AIFleeState(ai)
             );
             return;
+        }
+
+        if(ai.aiType ==AIType.AggressiveType3)
+        {
+            if (distanceToPlayer <= ai.detectionRange)
+            {
+                // start pack call
+                ai.StateMachine.ChangeState(new AIPackCallState(ai));
+                return;
+            }
         }
 
         if (ai.aiType == AIType.AggressiveType1)
@@ -1077,6 +1660,7 @@ public class AIDeadState : IState
     {
         ai.agent.isStopped = true;
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.DIE);
+        ai.Death();
     }
 
     public void Update() { }
@@ -1756,6 +2340,631 @@ public class CompanionAttackState : IState
         ai.StateMachine.ChangeState(new AICompanionFollowState(ai));
     }
 }
+
+public class AIPackCallState : IState
+{
+    private CuteAnimalAI ai;
+    private float timer;
+
+    public AIPackCallState(CuteAnimalAI ai) { this.ai = ai; }
+
+    public void Enter()
+    {
+        timer = ai.coordinationTime;
+        // Broadcast to neighbors:
+        Collider[] hits = Physics.OverlapSphere(ai.transform.position, ai.packCallRadius);
+        foreach (var c in hits)
+        {
+            if (c.TryGetComponent<CuteAnimalAI>(out var other)
+             && other.animalType == ai.animalType
+             && other.aiType == AIType.AggressiveType3
+             && !(other.StateMachine.CurrentState is AIPackCoordinateState))
+            {
+                other.StateMachine.ChangeState(new AIPackCoordinateState(other, ai));
+            }
+        }
+        // Self also coordinates:
+        ai.StateMachine.ChangeState(new AIPackCoordinateState(ai, ai));
+    }
+
+    public void Update() { /* instantaneous—Enter does all work */ }
+
+    public void Exit() { }
+}
+
+public class AIPackCoordinateState : IState
+{
+    private CuteAnimalAI ai;
+    private CuteAnimalAI caller;
+    private float timer;
+    private List<CuteAnimalAI> pack = new();
+
+    public AIPackCoordinateState(CuteAnimalAI ai, CuteAnimalAI caller)
+    {
+        this.ai = ai;
+        this.caller = caller;
+    }
+
+    public void Enter()
+    {
+        timer = ai.coordinationTime;
+        // Build pack list (max N)
+        var hits = Physics.OverlapSphere(caller.transform.position, ai.packCallRadius);
+        foreach (var c in hits)
+        {
+            if (pack.Count >= ai.maxPackSize) break;
+            if (c.TryGetComponent<CuteAnimalAI>(out var other)
+             && other.animalType == ai.animalType
+             && other.aiType == AIType.AggressiveType3)
+            {
+                pack.Add(other);
+            }
+        }
+        // Face toward player:
+        ai.agent.ResetPath();
+        ai.transform.LookAt(caller.player.position.Flat());
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
+    }
+
+    public void Update()
+    {
+        timer -= Time.deltaTime;
+        if (timer > 0f)
+            return;
+
+        // 2) Gather your pack members (including yourself)
+        var pack = GameObject
+            .FindGameObjectsWithTag(ai.targetTag)          // or however you cache your pack
+            .Select(go => go.GetComponent<CuteAnimalAI>())
+            .Where(a => a != null && a.aiType == AIType.AggressiveType3)
+            .ToList();
+
+        // 3) Figure out your index in the pack
+        int total = pack.Count;
+        int idx = pack.IndexOf(ai);
+        if (idx < 0) idx = 0; // fallback
+
+        // 4) Transition into the coordinated chase, handing off your angle slot
+        ai.StateMachine.ChangeState(
+            new AIPackChaseState(ai, ai.player, idx, total)
+        );
+    }
+
+    public void Exit() { }
+}
+
+public class AIPackAttackState : IState
+{
+    private CuteAnimalAI ai;
+    private Vector3 flankDirection;
+
+    public AIPackAttackState(CuteAnimalAI ai, Vector3 flankDirection)
+    {
+        this.ai = ai;
+        this.flankDirection = flankDirection;
+    }
+
+    public void Enter()
+    {
+        ai.agent.speed = ai.chaseSpeed;
+        ai.agent.stoppingDistance = ai.attackRange;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+
+        // Compute flank target point just off to the side of player
+        Vector3 sideOffset = Vector3.Cross(Vector3.up, (ai.player.position - ai.transform.position).Flat().normalized);
+        Vector3 target = ai.player.position + flankDirection + sideOffset * 2f;
+        ai.agent.SetDestination(target);
+    }
+
+    public void Update()
+    {
+        // Standard chase→attack logic, but each will approach from their assigned flank
+        float dist = Vector3.Distance(ai.transform.position, ai.player.position);
+        if (dist <= ai.attackRange)
+            ai.StateMachine.ChangeState(new AIAttackState(ai));
+        else
+            ai.agent.SetDestination(ai.player.position);
+    }
+
+    public void Exit() { }
+}
+
+public class AIPackChaseState : IState
+{
+    private CuteAnimalAI ai;
+    private Transform player;
+    private int index, total;
+    private Vector3 interceptPoint;
+    float lastAngleDeg;
+
+    private float engageStartTime;
+    private float orbitAngleDeg;
+    private bool orbitClockwise;
+    private float nextRepathTime;
+    private float baseSpeed;
+    private float burstTimer = 0f;
+    private float currentRadius;
+
+    private const float burstDuration = 1f;            // how long the burst lasts
+    private const float burstMultiplier = 1.5f;
+
+
+
+    public AIPackChaseState(CuteAnimalAI ai, Transform player, int index, int total)
+    {
+        this.ai = ai;
+        this.player = player;
+        this.index = index;
+        this.total = total;
+    }
+
+    private float CollapseFactor()
+    {
+        float t = (Time.time - engageStartTime) / Mathf.Max(0.01f, ai.packCollapseSeconds);
+        t = Mathf.Clamp01(t);
+        float f = Mathf.Lerp(1f, ai.packMinRadiusFactor, t);
+        currentRadius = ai.packChaseRadius * f;
+        return currentRadius;
+    }
+
+    private bool AngleWithinAttackWindow()
+    {
+        // 0° means directly in front of player; we used lastAngleDeg for our slot
+        return Mathf.Abs(lastAngleDeg) <= ai.packAttackWindowDeg;
+    }
+
+    public void Enter()
+    {
+        engageStartTime = Time.time;
+        baseSpeed = ai.chaseSpeed;
+        ai.agent.stoppingDistance = 0f;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+
+        // Start from assigned slot angle
+        ComputeIntercept();                 // sets lastAngleDeg, interceptPoint
+        orbitAngleDeg = lastAngleDeg;
+
+        // Randomize spin direction a bit so the pack doesn’t all choose the same
+        orbitClockwise = (ai.GetInstanceID() & 1) == 0;
+
+        // Stagger repaths so they don't sync
+        nextRepathTime = Time.time + Random.Range(0f, ai.packRepathInterval * 0.5f);
+
+        // Optional initial burst you already had
+        bool isRearFlanker = (total >= 4 && index == 0);
+        bool isDirectChaser = Mathf.Abs(lastAngleDeg) < 10f;
+        if (isRearFlanker || isDirectChaser) { ai.agent.speed = baseSpeed * 1.5f; burstTimer = 1f; }
+        else ai.agent.speed = baseSpeed;
+
+        ai.agent.SetDestination(interceptPoint);
+    }
+
+
+    public void Update()
+    {
+        if (burstTimer > 0f) { burstTimer -= Time.deltaTime; if (burstTimer <= 0f) ai.agent.speed = baseSpeed; }
+
+        // Make the slot angle drift → produces circling
+        if (ai.packOrbitingEnabled)
+        {
+            float dir = orbitClockwise ? 1f : -1f;
+            orbitAngleDeg += dir * ai.packOrbitAngularSpeedDeg * Time.deltaTime;
+            orbitAngleDeg = Mathf.Repeat(orbitAngleDeg + 360f, 360f);
+        }
+
+        // Periodic repath (also catches arrival or big player motion)
+        bool needRepath = Time.time >= nextRepathTime
+                       || (!ai.agent.pathPending && ai.agent.remainingDistance <= 0.25f)
+                       || (!ai.agent.pathPending && (player.position - interceptPoint).sqrMagnitude > 1.2f * 1.2f);
+
+        if (needRepath)
+        {
+            // Use orbiting angle if enabled, otherwise the static slot
+            ComputeIntercept(ai.packOrbitingEnabled ? (float?)orbitAngleDeg : null);
+            ai.agent.SetDestination(interceptPoint);
+            nextRepathTime = Time.time + ai.packRepathInterval;
+        }
+
+        // Rear overtake boost: wolves behind the player get a speed bump
+        Vector3 toAgent = (ai.transform.position - player.position).Flat().normalized;
+        float dot = Vector3.Dot(player.forward.Flat().normalized, toAgent); // < 0 means agent is behind player
+        bool inRearWedge = Mathf.Abs(Mathf.DeltaAngle(orbitAngleDeg, 180f)) <= ai.packRearAngleWindowDeg;
+        bool isBehind = dot < 0f || inRearWedge;
+
+        float targetSpeed = isBehind ? baseSpeed * ai.packRearBoost : baseSpeed;
+        ai.agent.speed = Mathf.Lerp(ai.agent.speed, targetSpeed, 8f * Time.deltaTime); // smooth
+
+        // If close enough, bite; otherwise allow your lunge commit logic as before
+        float distToPlayer = Vector3.Distance(ai.transform.position, player.position);
+        if (distToPlayer <= ai.attackRange * 1.05f)
+        {
+            ai.StateMachine.ChangeState(new AIAttackState(ai));
+            return;
+        }
+
+        bool canLunge = Time.time >= ai.nextPackAttackReadyTime;
+        bool nearEnough = distToPlayer <= ai.attackRange * 1.8f;
+        bool inWindow = Mathf.Abs(lastAngleDeg) <= ai.packAttackWindowDeg; // relies on ComputeIntercept setting lastAngleDeg
+
+        if ((inWindow && canLunge) || nearEnough)
+        {
+            ai.nextPackAttackReadyTime = Time.time + ai.packLungeCooldown;
+            ai.StateMachine.ChangeState(new AIPackLungeState(ai));
+            return;
+        }
+    }
+
+    public void Exit() { }
+
+    private void ComputeIntercept(float? angleOverride = null)
+    {
+        if (total <= 0) { interceptPoint = player.position; return; }
+        index = Mathf.Clamp(index, 0, total - 1);
+
+        float angleDeg;
+        if (angleOverride.HasValue) angleDeg = angleOverride.Value;
+        else
+        {
+            // your slot logic
+            if (total >= 4 && index == 0) angleDeg = 180f;
+            else
+            {
+                float slots = total >= 4 ? total - 1 : total;
+                float sectorSize = 360f / (total >= 4 ? slots : total);
+                int slotIndex = total >= 4 ? index - 1 : index;
+                float startOffset = total >= 4 ? -90f : 0f;
+                angleDeg = startOffset + sectorSize * slotIndex;
+            }
+        }
+
+        lastAngleDeg = angleDeg;  // used by attack window check
+
+        float r = CollapseFactor();
+        Vector3 dir = Quaternion.Euler(0, angleDeg, 0) * Vector3.forward;
+        Vector3 rawTarget = player.position + dir * r;
+
+        if (player.TryGetComponent<Rigidbody>(out var rb))
+            rawTarget += rb.velocity.Flat() * 0.25f;
+
+        NavMeshHit hit;
+        if (NavMesh.SamplePosition(rawTarget, out hit, 2f, NavMesh.AllAreas))
+            interceptPoint = hit.position;
+        else
+            interceptPoint = player.position;
+    }
+
+
+}
+
+
+
+public class AIPackLungeState : IState
+{
+    private CuteAnimalAI ai;
+    private float timer;
+    private Vector3 targetPoint;
+    private bool hit;
+
+    public AIPackLungeState(CuteAnimalAI ai) { this.ai = ai; }
+
+    public void Enter()
+    {
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+        ai.agent.stoppingDistance = 0f;
+        ai.agent.speed = ai.chaseSpeed * ai.packLungeSpeed;
+
+        // aim slightly past the player along our current facing
+        Vector3 dir = (ai.player.position - ai.transform.position).Flat().normalized;
+        targetPoint = ai.player.position + dir * ai.packLungeOvershoot;
+
+        ai.agent.SetDestination(targetPoint);
+        timer = ai.packLungeDuration;
+        hit = false;
+    }
+
+    public void Update()
+    {
+        timer -= Time.deltaTime;
+
+        // hit check
+        if (!hit && Vector3.Distance(ai.transform.position, ai.player.position) <= ai.attackRange)
+        {
+            if (ai.player.TryGetComponent<Health>(out var hp)) hp.TakeDamage(ai.attackDamage);
+            hit = true;
+        }
+
+        // end conditions: time up or reached target
+        bool arrived = !ai.agent.pathPending && ai.agent.remainingDistance <= 0.1f;
+        if (timer <= 0f || arrived || hit)
+        {
+            // if still close, do a quick bite; else resume chase
+            if (Vector3.Distance(ai.transform.position, ai.player.position) <= ai.attackRange * 0.95f)
+                ai.StateMachine.ChangeState(new AIAttackState(ai));
+            else
+                ai.StateMachine.ChangeState(new AIPackChaseState(ai, ai.player, 0, 0)); // idx/total will be rebuilt
+            return;
+        }
+    }
+
+    public void Exit() { }
+}
+
+
+// Aggressive jumper: perch -> jump down -> chase for a while -> jump back to perch
+public class AIJumpAttackState : IState
+{
+    private CuteAnimalAI ai;
+    public AIJumpAttackState(CuteAnimalAI ai) { this.ai = ai; }
+    private Coroutine jumpRoutine;
+
+    public void Enter()
+    {
+        // ✅ Arm the session immediately so no other triggers fire mid-air
+        ai.jumpSessionActive = true;
+        ai.jumpSessionDeadline = Time.time + ai.chaseDuration;
+
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
+
+        Vector3 start = ai.transform.position;
+        Vector3 desiredLand = ai.player ? ai.player.position : start;
+        Vector3 land = ai.SampleOnNavmesh(desiredLand, ai.jumpLandingProbeRadius);
+
+        // Optional: stop any previous jump routine just in case
+        if (jumpRoutine != null) ai.StopCoroutine(jumpRoutine);
+        jumpRoutine = ai.StartCoroutine(JumpAndChase(start, land));
+    }
+
+    private IEnumerator JumpAndChase(Vector3 start, Vector3 land)
+    {
+        // Jump down
+        yield return ai.StartCoroutine(ai.JumpArc(start, land, ai.jumpHeight, ai.jumpDuration));
+
+        // Give the agent a few frames to settle onto the mesh
+        int settleTries = 10;
+        while (settleTries-- > 0 && (!ai.agent.enabled || !ai.agent.isOnNavMesh))
+        {
+            if (NavMesh.SamplePosition(ai.transform.position, out var snap, ai.jumpLandingProbeRadius * 8f, NavMesh.AllAreas))
+                ai.agent.Warp(snap.position);
+
+            yield return null; // <-- important: wait a frame after Warp
+        }
+
+        if (!ai.agent.enabled || !ai.agent.isOnNavMesh)
+        {
+            ai.StateMachine.ChangeState(new AIJumpReturnHomeState(ai));
+            yield break;
+        }
+
+        ai.jumpSessionActive = true;
+        ai.jumpSessionDeadline = Time.time + ai.chaseDuration;
+
+        // Chase for a while
+        ai.agent.speed = ai.chaseSpeed;
+
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+
+        float timer = ai.chaseDuration;
+        while (timer > 0f)
+        {
+            timer -= Time.deltaTime;
+
+            // If state changed while we were mid-coroutine, stop cleanly
+            if (!(ai.StateMachine.CurrentState is AIJumpAttackState))
+                yield break;
+
+            if (ai.player == null) break;
+
+            // If not safely on the mesh, try to snap and skip this frame
+            if (!ai.agent.enabled || !ai.agent.isOnNavMesh)
+            {
+                if (NavMesh.SamplePosition(ai.transform.position, out var snap, 5f, NavMesh.AllAreas))
+                    ai.agent.Warp(snap.position);
+
+                yield return null; // <-- skip SetDestination this frame
+                continue;
+            }
+
+            // Final guard before calling SetDestination
+            ai.agent.SetDestination(ai.player.position);
+
+            if (Vector3.Distance(ai.transform.position, ai.player.position) <= ai.attackRange)
+            {
+                ai.StateMachine.ChangeState(new AIAttackState(ai));
+                yield break;
+            }
+
+            yield return null;
+        }
+
+        ai.StateMachine.ChangeState(new AIJumpReturnHomeState(ai));
+    }
+
+
+    public void Update() { }
+    public void Exit()
+    {
+        if (jumpRoutine != null) ai.StopCoroutine(jumpRoutine);
+        jumpRoutine = null;
+    }
+}
+
+public class AIJumpReturnHomeState : IState
+{
+    private CuteAnimalAI ai;
+    private Vector3 footPoint;
+    private bool startedJump;
+    private float noProgressTimer;
+
+    private const float JumpTriggerRadius = 1.5f;   // a bit looser
+    private const float NoProgressTimeout = 1.25f;  // seconds
+
+    public AIJumpReturnHomeState(CuteAnimalAI ai) { this.ai = ai; }
+
+    public void Enter()
+    {
+        ai.jumpSessionActive = true;
+
+        footPoint = ai.GetPerchFootPointForReturn();
+
+        if (!ai.agent.enabled) ai.agent.enabled = true;
+        ai.agent.updateRotation = true;
+        ai.agent.isStopped = false;
+        ai.agent.stoppingDistance = 0f;
+        ai.agent.speed = ai.chaseSpeed;
+
+        if (!ai.agent.isOnNavMesh &&
+            NavMesh.SamplePosition(ai.transform.position, out var snap, ai.jumpLandingProbeRadius * 4f, NavMesh.AllAreas))
+        {
+            ai.agent.Warp(snap.position);
+        }
+
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+
+        // ✅ If there’s no complete path to the foot, try a reachable point along the way
+        if (!ai.HasCompletePath(footPoint))
+        {
+            Vector3 reachable = ai.FindReachableToward(footPoint);
+            if ((reachable - ai.transform.position).sqrMagnitude > 0.2f)
+                ai.agent.SetDestination(reachable);
+            else
+            {
+                // Nothing reachable → jump straight back to perch from here
+                startedJump = true;
+                ai.agent.ResetPath();
+                ai.StartCoroutine(JumpUpThenRest());
+                return;
+            }
+        }
+        else
+        {
+            ai.agent.SetDestination(footPoint);
+        }
+
+        noProgressTimer = NoProgressTimeout;
+        startedJump = false;
+    }
+
+    public void Update()
+    {
+        if (startedJump) return;
+
+        if (!ai.agent.enabled) { ai.agent.enabled = true; return; }
+        if (!ai.agent.isOnNavMesh)
+        {
+            if (NavMesh.SamplePosition(ai.transform.position, out var snap, ai.jumpLandingProbeRadius * 4f, NavMesh.AllAreas))
+                ai.agent.Warp(snap.position);
+            return;
+        }
+
+        // If our path is invalid/partial at any point → try reachable, else jump up
+        if (!ai.agent.hasPath || ai.agent.pathStatus != NavMeshPathStatus.PathComplete)
+        {
+            Vector3 reachable = ai.FindReachableToward(footPoint);
+            if ((reachable - ai.transform.position).sqrMagnitude > 0.2f)
+                ai.agent.SetDestination(reachable);
+            else
+            {
+                startedJump = true;
+                ai.agent.ResetPath();
+                ai.StartCoroutine(JumpUpThenRest());
+                return;
+            }
+        }
+
+        // “No progress” fail-safe: velocity near zero while far from target
+        if (ai.agent.remainingDistance > 2f && ai.agent.velocity.sqrMagnitude < 0.01f)
+        {
+            noProgressTimer -= Time.deltaTime;
+            if (noProgressTimer <= 0f)
+            {
+                // Try a fresh reachable point; if still nothing, jump up
+                Vector3 reachable = ai.FindReachableToward(footPoint);
+                if (ai.HasCompletePath(reachable))
+                {
+                    ai.agent.SetDestination(reachable);
+                    noProgressTimer = NoProgressTimeout;
+                }
+                else
+                {
+                    startedJump = true;
+                    ai.agent.ResetPath();
+                    ai.StartCoroutine(JumpUpThenRest());
+                    return;
+                }
+            }
+        }
+        else
+        {
+            noProgressTimer = NoProgressTimeout;
+        }
+
+        // Normal “close to foot” trigger
+        float dist = Vector3.Distance(ai.transform.position, footPoint);
+        if (dist <= JumpTriggerRadius || (!ai.agent.pathPending && ai.agent.remainingDistance <= JumpTriggerRadius))
+        {
+            startedJump = true;
+            ai.agent.ResetPath();
+            ai.StartCoroutine(JumpUpThenRest());
+        }
+    }
+
+    private IEnumerator JumpUpThenRest()
+    {
+        Vector3 from = ai.transform.position;
+        Vector3 to = ai.spawnPosition;
+
+        if (ai.agent.enabled) ai.agent.enabled = false;
+        yield return ai.StartCoroutine(ai.JumpArc(from, to, ai.jumpHeight, ai.jumpDuration, landOnNavMesh: false));
+
+        ai.StateMachine.ChangeState(new AIPerchRestState(ai));
+    }
+
+    public void Exit() { }
+}
+
+
+
+
+// Perched, chill until player gets close again.
+public class AIPerchRestState : IState
+{
+    private CuteAnimalAI ai;
+    public AIPerchRestState(CuteAnimalAI ai) { this.ai = ai; }
+
+    public void Enter()
+    {
+        // Optional: if your perch is off NavMesh, you can disable the agent here.
+        // But since we warped onto the mesh at the foot of the perch above, we keep it enabled.
+        if (ai.agent.enabled) ai.agent.ResetPath();
+        ai.agent.enabled = false;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
+        ai.jumpSessionActive = false;
+
+    }
+
+    public void Update()
+    {
+        float dist = ai.DistanceToPlayer();
+
+        //if (ai.aiType == CuteAnimalAI.AIType.AggressiveJumping)
+        //{
+        //    if (dist <= ai.detectionRange)
+        //    {
+        //        ai.StateMachine.ChangeState(new AIJumpAttackState(ai));
+        //        return;
+        //    }
+        //}
+    }
+
+    public void Exit() {  }
+}
+
+
+
+
+
+
+
 
 
 
