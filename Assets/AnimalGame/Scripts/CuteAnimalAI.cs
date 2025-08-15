@@ -5,12 +5,20 @@ using UnityEngine;
 using UnityEngine.AI;
 using static CuteAnimalAI;
 
+public static class PerfBuffers
+{
+    // Keep small for mobile. Bump sizes if you see truncation.
+    public static readonly Collider[] c16 = new Collider[16];
+    public static readonly Collider[] c32 = new Collider[32];
+    public static readonly Collider[] c64 = new Collider[64];
+}
+
 #region MAIN AI SCRIPT
 
 [RequireComponent(typeof(NavMeshAgent))]
 public class CuteAnimalAI : MonoBehaviour
 {
-    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AggressiveType3, Companion , AggressiveJumping}
+    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AggressiveType3, Companion , AggressiveJumping, AggressiveType4 }
     public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich }
 
     [Header("🧠 AI Behavior Type")]
@@ -79,10 +87,6 @@ public class CuteAnimalAI : MonoBehaviour
     [Tooltip("Maximum rest duration.")]
     public float restMaxDuration = 10f;
 
-    [Header("📍 Navigation")]
-    [Tooltip("Optional patrol points for wander.")]
-    public Transform[] wanderPoints;
-
     [Header("😱 Flee & Panic")]
     [Tooltip("Radius to alert herd to flee.")]
     public float herdPanicRadius = 10f;
@@ -134,6 +138,36 @@ public class CuteAnimalAI : MonoBehaviour
     [Header("😤 Retaliation (AggressiveType2)")]
     [Tooltip("Delay to switch from flee to hunt after provoked.")]
     public float retaliationDelay = 3f;
+
+    [Header("🐆 AggressiveType4 (Chase Tuning)")]
+    [Tooltip("Randomize per-agent speeds/turn to avoid robotic packs (Type4 only).")]
+    public bool randomizeAggressiveStats = true;
+
+    [Tooltip("Multiplier range applied to wander/chase/flee for Type4 at spawn.")]
+    public Vector2 speedRandomRange = new Vector2(0.9f, 1.1f);
+
+    [Tooltip("Max degrees/sec this AI can rotate while chasing (Type4).")]
+    public float turnRateDeg = 90f;
+
+    [Tooltip("Angle where turn-slowdown starts to bite (deg).")]
+    public float turnSlowdownAngle = 60f;
+
+    [Range(0.25f, 1f)]
+    [Tooltip("Minimum speed fraction at very sharp turns.")]
+    public float turnSlowdownMinFactor = 0.6f;
+
+    [Tooltip("Require facing within this cone to start a melee attack (deg).")]
+    public float facingConeToAttack = 35f;
+
+    [Header("🎯 AggressiveType4 Predictive Pursuit")]
+    [Tooltip("Seconds to lead the target; 0 = no prediction.")]
+    public float leadPredictionSeconds = 0.4f;
+
+    [Tooltip("Clamp magnitude of the predicted offset (units).")]
+    public float leadMaxDistance = 6f;
+
+    [Tooltip("EMA smoothing of player velocity (0..1).")]
+    [Range(0f, 1f)] public float playerVelSmoothing = 0.25f;
 
     [Header("👤 Companion Settings")]
     [Tooltip("Distance at or above which Companion follows directly.")]
@@ -267,6 +301,10 @@ public class CuteAnimalAI : MonoBehaviour
     [Tooltip("Enable NavMeshAgent auto-braking.")]
     public bool enableAutoBraking = true;
 
+
+    [Tooltip("How far ahead (meters) to place the zigzag target.")]
+    public float zigzagLookahead = 6f;
+
     // Companion-specific runtime
     [HideInInspector] public Vector3 lastCompanionTarget;
     // Hidden runtime state
@@ -288,6 +326,48 @@ public class CuteAnimalAI : MonoBehaviour
 
     [SerializeField] private string playerTag = "Player";
     private float _playerLookupCooldown = 0f;
+
+    private NavMeshPath _pathCache;
+
+
+    [Header("⚡ Performance")]
+    [Tooltip("Distances at which we reduce AI work. Sq = squared for cheap compares")]
+    public float lodNear = 15f;
+    public float lodMid = 40f;
+    public float lodFar = 80f;
+    public float lodCull = 120f;  // beyond this, full sleep (agent off)
+
+    [Tooltip("How often heavy brain runs by LOD")]
+    public float thinkIntervalNear = 0.0f;  // every frame
+    public float thinkIntervalMid = 0.15f; // ~7 fps
+    public float thinkIntervalFar = 0.5f;  // 2 fps
+
+    [Tooltip("How often we recompute destinations / queries by LOD")]
+    public float navIntervalNear = 0.05f;   // 20 fps
+    public float navIntervalMid = 0.25f;   // 4 fps
+    public float navIntervalFar = 0.75f;   // ~1.3 fps
+
+    [Tooltip("How often to re-evaluate LOD buckets (seconds)")]
+    public float lodEvalInterval = 0.5f;
+
+    private float lodNearSq, lodMidSq, lodFarSq, lodCullSq;
+    private float _nextLodEval, _nextThink, _nextNav;
+    private enum LOD { Cull, Far, Mid, Near }
+    private LOD _lod = LOD.Near;
+
+    private Vector3 _lastDest;          // for destination throttling
+    private float _lastDestSetTime;
+    public float minDestSqrDelta = 0.16f;  // 0.4m delta before we re-path
+
+    [HideInInspector] public float runtimeSpeedMul = 1f;
+    [HideInInspector] public float runtimeTurnRateDeg = 90f;
+
+    [HideInInspector] public Vector3 playerVelocitySmoothed;
+    [HideInInspector] private Vector3 _playerPrevPos;
+
+
+
+
 
     private bool TryResolvePlayer(bool force = false)
     {
@@ -342,6 +422,14 @@ public class CuteAnimalAI : MonoBehaviour
             _colorProp = _renderers[0].sharedMaterial.HasProperty("_BaseColor") ? "_BaseColor" : "_Color";
             _originalTint = _renderers[0].sharedMaterial.GetColor(_colorProp);
         }
+
+        _pathCache = new NavMeshPath();
+
+        lodNearSq = lodNear * lodNear;
+        lodMidSq = lodMid * lodMid;
+        lodFarSq = lodFar * lodFar;
+        lodCullSq = lodCull * lodCull;
+
     }
 
 
@@ -373,6 +461,9 @@ public class CuteAnimalAI : MonoBehaviour
         if (!Application.isPlaying) return;
 
         TryResolvePlayer();
+
+        _playerPrevPos = player.position;
+        playerVelocitySmoothed = Vector3.zero;
 
         // (Re)subscribe events for pooled objects
         if (health == null) health = GetComponent<Health>();
@@ -410,9 +501,55 @@ public class CuteAnimalAI : MonoBehaviour
     }
 
 
+    public Vector3 GetPredictedPlayerPosition()
+    {
+        if (!player) return transform.position;
+        Vector3 offset = playerVelocitySmoothed * Mathf.Max(0f, leadPredictionSeconds);
+        if (offset.sqrMagnitude > leadMaxDistance * leadMaxDistance)
+            offset = offset.normalized * leadMaxDistance;
+        return player.position + offset;
+    }
+
+    // Overload that respects a degrees/sec cap (used by Type4 chase)
+    public void RotateTowards(Vector3 dir, float degreesPerSecond)
+    {
+        if (dir.sqrMagnitude > 0.01f)
+        {
+            Quaternion targetRotation = Quaternion.LookRotation(dir);
+            transform.rotation = Quaternion.RotateTowards(
+                transform.rotation,
+                targetRotation,
+                degreesPerSecond * Time.deltaTime
+            );
+        }
+    }
+
+    private void EvalLod()
+    {
+        if (player == null) { _lod = LOD.Far; return; } // conservative
+        float d2 = (player.position - transform.position).sqrMagnitude;
+
+        if (d2 > lodCullSq) _lod = LOD.Cull;
+        else if (d2 > lodFarSq) _lod = LOD.Far;
+        else if (d2 > lodMidSq) _lod = LOD.Mid;
+        else _lod = LOD.Near;
+
+        // Agent enable/disable at cull boundary
+        if (_lod == LOD.Cull)
+        {
+            if (agent.enabled) agent.enabled = false;
+            // Optional: park idle anim only once
+            animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
+        }
+        else
+        {
+            if (!agent.enabled) EnsureAgentOnNavMesh(); // safely re-enable when coming back
+        }
+    }
+
+
+
     private Coroutine _spawnInitCo;
-
-
 
     private void ClearAllPropertyBlocks()
     {
@@ -544,6 +681,18 @@ public class CuteAnimalAI : MonoBehaviour
             var objs = GameObject.FindGameObjectsWithTag(targetTag);
             potentialTargets = new List<Transform>(objs.Select(o => o.transform));
         }
+
+        // Per-agent variance for Type4 only
+        runtimeSpeedMul = 1f;
+        runtimeTurnRateDeg = turnRateDeg;
+
+        if (aiType == AIType.AggressiveType4 && randomizeAggressiveStats)
+        {
+            float mul = Random.Range(speedRandomRange.x, speedRandomRange.y);
+            runtimeSpeedMul = mul;
+            runtimeTurnRateDeg = turnRateDeg * Random.Range(0.9f, 1.1f);
+        }
+
 
         // Ensure we’re on the NavMesh before calling ResetPath / setting state
         if (EnsureAgentOnNavMesh(6f))
@@ -759,7 +908,24 @@ public class CuteAnimalAI : MonoBehaviour
         return SampleOnNavmesh(spawnPosition, jumpLandingProbeRadius * 4f);
     }
 
+    public void SetDestinationSmart(Vector3 target, bool forceNow = false)
+    {
+        if (!agent || !agent.enabled || !agent.isOnNavMesh) return;
 
+        if (!forceNow)
+        {
+            float navInterval = _lod == LOD.Near ? navIntervalNear
+                              : _lod == LOD.Mid ? navIntervalMid
+                              : navIntervalFar;
+
+            if (Time.time - _lastDestSetTime < navInterval) return;
+            if ((target - _lastDest).sqrMagnitude < minDestSqrDelta) return;
+        }
+
+        agent.SetDestination(target);
+        _lastDest = target;
+        _lastDestSetTime = Time.time;
+    }
 
     private void Update()
     {
@@ -779,6 +945,35 @@ public class CuteAnimalAI : MonoBehaviour
                 _playerLookupCooldown = 1f; // try once per second
             }
         }
+
+        // Type4: smooth estimate of player velocity for leading
+        if (aiType == AIType.AggressiveType4 && player != null)
+        {
+            Vector3 cur = player.position;
+            Vector3 rawV = (cur - _playerPrevPos) / Mathf.Max(Time.deltaTime, 0.0001f);
+            _playerPrevPos = cur;
+            playerVelocitySmoothed = Vector3.Lerp(playerVelocitySmoothed, rawV, playerVelSmoothing);
+        }
+
+
+        if (Time.time >= _nextLodEval)
+        {
+            EvalLod();
+            _nextLodEval = Time.time + lodEvalInterval;
+        }
+
+        // Hard cull pathing/brain if very far
+        if (_lod == LOD.Cull) return;
+
+        // Decide current cadence from LOD
+        float thinkInterval = _lod == LOD.Near ? thinkIntervalNear
+                            : _lod == LOD.Mid ? thinkIntervalMid
+                            : thinkIntervalFar;
+
+        float navInterval = _lod == LOD.Near ? navIntervalNear
+                            : _lod == LOD.Mid ? navIntervalMid
+                            : navIntervalFar;
+
 
         // 1) Death check
         if (health != null && health.IsDead)
@@ -860,6 +1055,18 @@ public class CuteAnimalAI : MonoBehaviour
             }
         }
 
+        bool canThink = (Time.time >= _nextThink);
+        if (canThink)
+        {
+            // Only the thinking block runs here
+            _nextThink = Time.time + thinkInterval;
+        }
+        else
+        {
+            // Skip brain this frame; still allow lightweight animation updates below
+            return;
+        }
+
         // 6) Otherwise, let the normal state machine run
         StateMachine.Update();
 
@@ -868,10 +1075,11 @@ public class CuteAnimalAI : MonoBehaviour
     public bool HasCompletePath(Vector3 target)
     {
         if (!agent.enabled || !agent.isOnNavMesh) return false;
-        var path = new NavMeshPath();
-        agent.CalculatePath(target, path);
-        return path.status == NavMeshPathStatus.PathComplete;
+        if (_pathCache == null) _pathCache = new NavMeshPath();
+        agent.CalculatePath(target, _pathCache);
+        return _pathCache.status == NavMeshPathStatus.PathComplete;
     }
+
 
     // Returns the farthest point toward 'target' that has a complete path (on this island),
     // stepping back along the segment. Returns 'current' if nothing works.
@@ -1012,17 +1220,21 @@ public class CuteAnimalAI : MonoBehaviour
         Vector3 repulsion = Vector3.zero;
         int neighborCount = 0;
 
-        Collider[] neighbors = Physics.OverlapSphere(transform.position, repulsionDistance * 2);
-        foreach (var neighbor in neighbors)
+        // NonAlloc (double radius as before)
+        int count = Physics.OverlapSphereNonAlloc(transform.position, repulsionDistance * 2f, PerfBuffers.c32);
+        for (int i = 0; i < count; i++)
         {
-            if (neighbor.gameObject == gameObject) continue;
-            CuteAnimalAI otherAI = neighbor.GetComponent<CuteAnimalAI>();
+            var col = PerfBuffers.c32[i];
+            if (!col) continue;
+            if (col.gameObject == gameObject) continue;
+
+            CuteAnimalAI otherAI = col.GetComponent<CuteAnimalAI>();
             if (otherAI != null && otherAI.aiType == aiType && otherAI.animalType == animalType)
             {
                 alignment += otherAI.agent.velocity.normalized;
-                cohesion += neighbor.transform.position;
+                cohesion += col.transform.position;
 
-                Vector3 away = transform.position - neighbor.transform.position;
+                Vector3 away = transform.position - col.transform.position;
                 repulsion += away.normalized / (away.magnitude + 0.01f);
 
                 neighborCount++;
@@ -1045,6 +1257,7 @@ public class CuteAnimalAI : MonoBehaviour
 
         return transform.position;
     }
+
 }
 
 #endregion
@@ -1091,8 +1304,6 @@ public class AIRestState : IState
 
         float dist = ai.DistanceToPlayer();
 
-        Debug.Log("DistanceToPlayer" + dist);
-
         // ——— Player logic ———
         if (ai.aiType == AIType.Passive || ai.aiType == AIType.PassiveEasy || ai.aiType == AIType.PassiveVeryEasy)
         {
@@ -1109,7 +1320,7 @@ public class AIRestState : IState
                 return;
             }
         }
-        else if (ai.aiType == AIType.Aggressive)
+        else if (ai.aiType == AIType.Aggressive || ai.aiType == AIType.AggressiveType4)
         {
             if (dist <= ai.attackRange)
             {
@@ -1120,7 +1331,11 @@ public class AIRestState : IState
             if (dist <= ai.detectionRange)
             {
                 ai.agent.isStopped = false;
-                ai.StateMachine.ChangeState(new AIChaseState(ai));
+                // Type4 uses the new chase state
+                if (ai.aiType == AIType.AggressiveType4)
+                    ai.StateMachine.ChangeState(new AIChaseType4State(ai));
+                else
+                    ai.StateMachine.ChangeState(new AIChaseState(ai));
                 return;
             }
         }
@@ -1166,7 +1381,7 @@ public class AIRestState : IState
                   ai.transform.position + spacing.normalized * 1f,
                   out var hit, 1f, NavMesh.AllAreas))
             {
-                ai.agent.SetDestination(hit.position);
+                ai.SetDestinationSmart(hit.position);
                 ai.animHandler?.SetAnimation(eCuteAnimalAnims.WALK);
                 return;
             }
@@ -1198,10 +1413,13 @@ public class AIRestState : IState
         Vector3 totalPush = Vector3.zero;
         int count = 0;
 
-        Collider[] neighbors = Physics.OverlapSphere(ai.transform.position, ai.repulsionDistance);
-        foreach (var n in neighbors)
+        int n = Physics.OverlapSphereNonAlloc(ai.transform.position, ai.repulsionDistance, PerfBuffers.c16);
+        for (int i = 0; i < n; i++)
         {
-            if (n.TryGetComponent(out CuteAnimalAI other) && other != ai)
+            var col = PerfBuffers.c16[i];
+            if (!col) continue;
+
+            if (col.TryGetComponent(out CuteAnimalAI other) && other != ai)
             {
                 if (other.animalType == ai.animalType)
                 {
@@ -1219,6 +1437,7 @@ public class AIRestState : IState
         return (count > 0) ? totalPush / count : Vector3.zero;
     }
 
+
     private void UpdateMovementAnimation()
     {
         float speed = ai.agent.velocity.magnitude;
@@ -1230,6 +1449,68 @@ public class AIRestState : IState
             ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
     }
 }
+
+
+
+public class AIChaseType4State : IState
+{
+    private CuteAnimalAI ai;
+
+    public AIChaseType4State(CuteAnimalAI ai) { this.ai = ai; }
+
+    public void Enter()
+    {
+        ai.agent.speed = ai.chaseSpeed * ai.runtimeSpeedMul;
+        ai.agent.stoppingDistance = ai.stopDistance;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+    }
+
+    public void Update()
+    {
+        if (!ai.player)
+        {
+            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            return;
+        }
+
+        float distanceToPlayer = ai.DistanceToPlayer();
+
+        if (distanceToPlayer > ai.detectionRange)
+        {
+            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            return;
+        }
+
+        // Predictive pursuit
+        Vector3 chaseTarget = ai.GetPredictedPlayerPosition();
+        Vector3 desiredDir = (chaseTarget - ai.transform.position).Flat().normalized;
+        if (desiredDir.sqrMagnitude < 0.0001f)
+            desiredDir = ai.transform.forward.Flat().normalized;
+
+        // Turn with a capped rate
+        ai.RotateTowards(desiredDir, ai.runtimeTurnRateDeg);
+
+        // Slow down on sharp turns to curve better (less overshoot)
+        float angleError = Vector3.Angle(ai.transform.forward.Flat(), desiredDir);
+        float slowT = Mathf.InverseLerp(0f, Mathf.Max(1f, ai.turnSlowdownAngle), angleError);
+        float speedFactor = Mathf.Lerp(1f, ai.turnSlowdownMinFactor, slowT);
+        ai.agent.speed = ai.chaseSpeed * ai.runtimeSpeedMul * speedFactor;
+
+        // Throttled destination
+        ai.SetDestinationSmart(chaseTarget);
+
+        // Require both range and facing before attacking
+        if (distanceToPlayer <= ai.attackRange && angleError <= ai.facingConeToAttack)
+        {
+            ai.StateMachine.ChangeState(new AIAttackState(ai));
+            return;
+        }
+    }
+
+    public void Exit() { }
+}
+
+
 
 // ================== WANDER STATE ==================
 public class AIWanderState : IState
@@ -1297,7 +1578,7 @@ public class AIWanderState : IState
         }
 
         // ✅ Aggressive → chase or attack if close
-        if (ai.aiType == CuteAnimalAI.AIType.Aggressive)
+        if (ai.aiType == CuteAnimalAI.AIType.Aggressive || ai.aiType == CuteAnimalAI.AIType.AggressiveType4)
         {
             if (distanceToPlayer <= ai.attackRange)
             {
@@ -1306,7 +1587,10 @@ public class AIWanderState : IState
             }
             else if (distanceToPlayer <= ai.detectionRange)
             {
-                ai.StateMachine.ChangeState(new AIChaseState(ai));
+                if (ai.aiType == AIType.AggressiveType4)
+                    ai.StateMachine.ChangeState(new AIChaseType4State(ai));
+                else
+                    ai.StateMachine.ChangeState(new AIChaseState(ai));
                 return;
             }
         }
@@ -1342,7 +1626,7 @@ public class AIWanderState : IState
             }
 
             Vector3 finalTarget = ai.enableFlocking ? ai.GetBoidTarget(target) : target;
-            ai.agent.SetDestination(finalTarget);
+            ai.SetDestinationSmart(finalTarget);
 
             ai.wanderTimer = ai.wanderInterval;
         }
@@ -1369,34 +1653,33 @@ public class AIWanderState : IState
 
     private bool IsSpotBlocked(Vector3 pos)
     {
-        Collider[] neighbors = Physics.OverlapSphere(pos, ai.repulsionDistance * 1.2f);
-        foreach (var n in neighbors)
+        int n = Physics.OverlapSphereNonAlloc(pos, ai.repulsionDistance * 1.2f, PerfBuffers.c16);
+        for (int i = 0; i < n; i++)
         {
-            if (n.TryGetComponent(out CuteAnimalAI other) && other != ai)
+            var col = PerfBuffers.c16[i];
+            if (!col) continue;
+
+            if (col.TryGetComponent(out CuteAnimalAI other) && other != ai)
             {
                 if (other.StateMachine != null && other.StateMachine.GetType() == typeof(AIRestState))
-                    return true; // blocked by resting herd member
+                    return true;
             }
         }
         return false;
     }
 
+
     private Vector3 GetRandomWanderTarget()
     {
         Vector3 baseTarget;
-        if (ai.wanderPoints != null && ai.wanderPoints.Length > 0)
-        {
-            baseTarget = ai.wanderPoints[Random.Range(0, ai.wanderPoints.Length)].position;
-        }
-        else
-        {
+      
             Vector3 randomDir = Random.insideUnitSphere * ai.wanderRadius;
             randomDir += ai.transform.position;
             if (NavMesh.SamplePosition(randomDir, out var hit, ai.wanderRadius, NavMesh.AllAreas))
                 baseTarget = hit.position;
             else
                 baseTarget = ai.transform.position;
-        }
+        
         return baseTarget;
     }
 
@@ -1443,7 +1726,7 @@ public class AIChaseState : IState
             return;
         }
 
-        ai.agent.SetDestination(ai.player.position);
+        ai.SetDestinationSmart(ai.player.position);
     }
 
     public void Exit() { }
@@ -1546,17 +1829,28 @@ public class AIFleeState : IState
             return;
         }
 
-        Vector3 fleeDir = ComputeSafeFleeDirection();
-        Vector3 lateral = Vector3.Cross(Vector3.up, fleeDir).normalized;
-        float zigzagOffset = Mathf.Sin(Time.time * ai.zigzagSpeed) * ai.zigzagStrength;
-        Vector3 finalDir = (fleeDir + lateral * zigzagOffset).normalized;
-        Vector3 candidate = ai.transform.position + finalDir * ai.fleeRange;
+        // --- Zigzag flee with world-space lateral meters and forced updates ---
+        Vector3 fleeDir = ComputeSafeFleeDirection();                      // unit dir
+        Vector3 lateral = Vector3.Cross(Vector3.up, fleeDir).normalized;   // perp
+
+        // Lateral amplitude (meters) and a small lookahead so the point visibly oscillates
+        float lateralMeters = Mathf.Sin(Time.time * ai.zigzagSpeed) * ai.zigzagStrength;
+        Vector3 lookahead = fleeDir * Mathf.Max(2f, ai.zigzagLookahead);
+        Vector3 offset = lateral * lateralMeters;
+
+        // Propose a moving waypoint ahead + lateral offset
+        Vector3 candidate = ai.transform.position + lookahead + offset;
+
+        // Validate/snap to navmesh/away from edges (your existing helper)
         Vector3 safeTarget = ValidateFleeTarget(candidate);
 
-        ai.RotateTowards(finalDir);
+        // Face where we intend to go right now
+        ai.RotateTowards((lookahead + offset).normalized);
 
+        // Force the destination update so the oscillation actually shows up
         if (safeTarget != Vector3.zero)
-            ai.agent.SetDestination(safeTarget);
+            ai.SetDestinationSmart(safeTarget, forceNow: true);
+
     }
 
     private Vector3 ComputeSafeFleeDirection()
@@ -1750,7 +2044,7 @@ public class AIChargeState : IState
 
         // 3) Tell the NavMeshAgent to run full‐speed toward that overshoot point
         ai.agent.stoppingDistance = 0f;
-        ai.agent.SetDestination(overshootPoint);
+        ai.SetDestinationSmart(overshootPoint);
     }
 
     public void Update()
@@ -1852,7 +2146,7 @@ public class AIFleeSimpleState : IState
                 candidate = ai.transform.position + inward.normalized * ai.fleeRange;
             }
 
-            ai.agent.SetDestination(hit.position);
+            ai.SetDestinationSmart(hit.position);
             ai.RotateTowards(fleeDir);
         }
     }
@@ -1916,7 +2210,7 @@ public class AIFleeVeryEasyState : IState
                     candidate = ai.transform.position + fleeDirection * ai.fleeRange;
                 }
 
-                ai.agent.SetDestination(candidate);
+                ai.SetDestinationSmart(candidate);
                 ai.RotateTowards(fleeDirection);  // Always face direction of escape
             }
         }
@@ -1937,7 +2231,7 @@ public class AIReturnToBaseState : IState
 
     public void Enter()
     {
-        ai.agent.SetDestination(ai.spawnPosition);
+        ai.SetDestinationSmart(ai.spawnPosition);
         ai.agent.speed = ai.wanderSpeed;
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.WALK);
     }
@@ -2002,7 +2296,7 @@ public class AIFleeThenHuntState : IState
                 // Only update path if the new target is significantly different
                 if ((hit.position - ai.agent.destination).sqrMagnitude > DESTINATION_THRESHOLD_SQ)
                 {
-                    ai.agent.SetDestination(hit.position);
+                    ai.SetDestinationSmart(hit.position);
                 }
             }
             ai.RotateTowards(fleeDirection);
@@ -2057,7 +2351,7 @@ public class AICompanionState : IState
         ) * ai.companionCircleRadius;
 
         Vector3 target = ai.player.position + offset;
-        ai.agent.SetDestination(target);
+        ai.SetDestinationSmart(target);
         ai.UpdateMovementAnimation();
     }
 
@@ -2086,7 +2380,13 @@ public class AICompanionIdleState : IState
     {
         var sep = Vector3.zero; var coh = Vector3.zero; var ali = Vector3.zero;
         int count = 0;
-        foreach (var col in Physics.OverlapSphere(ai.transform.position, ai.flockNeighborRadius))
+
+        int n = Physics.OverlapSphereNonAlloc(ai.transform.position, ai.flockNeighborRadius, PerfBuffers.c16);
+        for (int i = 0; i < n; i++)
+        {
+            var col = PerfBuffers.c16[i];
+            if (!col) continue;
+
             if (col.TryGetComponent<CuteAnimalAI>(out var other) && other.aiType == AIType.Companion && other != ai)
             {
                 Vector3 toOther = ai.transform.position - other.transform.position;
@@ -2095,7 +2395,10 @@ public class AICompanionIdleState : IState
                 ali += other.agent.velocity.normalized;
                 count++;
             }
+        }
+
         if (count == 0) return Vector3.zero;
+
         coh = ((coh / count) - ai.transform.position).normalized;
         ali = (ali / count).normalized;
         return sep * ai.flockSeparationWeight + coh * ai.flockCohesionWeight + ali * ai.flockAlignmentWeight;
@@ -2144,7 +2447,7 @@ public class AICompanionIdleState : IState
         // 4) jitter reduction & NavMesh set
         if ((desired - ai.lastCompanionTarget).sqrMagnitude > ai.companionJitterThresholdSq)
         {
-            ai.agent.SetDestination(desired);
+            ai.SetDestinationSmart(desired);
             ai.lastCompanionTarget = desired;
         }
 
@@ -2184,7 +2487,7 @@ public class AICompanionFollowState : IState
         float dist = ai.DistanceToPlayer();
         if (dist > ai.companionFollowDistance)
         {
-            ai.agent.SetDestination(ai.player.position);
+            ai.SetDestinationSmart(ai.player.position);
             ai.SmoothRotate(ai.player.position - ai.transform.position, ai.companionRotationLerp);
         }
         else
@@ -2247,7 +2550,7 @@ public class CompanionChaseState : IState
         }
 
         // Otherwise keep chasing
-        ai.agent.SetDestination(target.position);
+        ai.SetDestinationSmart(target.position);
         ai.SmoothRotate(target.position - ai.transform.position, ai.companionRotationLerp);
     }
 
@@ -2351,21 +2654,26 @@ public class AIPackCallState : IState
     public void Enter()
     {
         timer = ai.coordinationTime;
-        // Broadcast to neighbors:
-        Collider[] hits = Physics.OverlapSphere(ai.transform.position, ai.packCallRadius);
-        foreach (var c in hits)
+
+        int n = Physics.OverlapSphereNonAlloc(ai.transform.position, ai.packCallRadius, PerfBuffers.c64);
+        for (int i = 0; i < n; i++)
         {
-            if (c.TryGetComponent<CuteAnimalAI>(out var other)
-             && other.animalType == ai.animalType
-             && other.aiType == AIType.AggressiveType3
-             && !(other.StateMachine.CurrentState is AIPackCoordinateState))
+            var col = PerfBuffers.c64[i];
+            if (!col) continue;
+
+            if (col.TryGetComponent<CuteAnimalAI>(out var other)
+                && other.animalType == ai.animalType
+                && other.aiType == AIType.AggressiveType3
+                && !(other.StateMachine.CurrentState is AIPackCoordinateState))
             {
                 other.StateMachine.ChangeState(new AIPackCoordinateState(other, ai));
             }
         }
-        // Self also coordinates:
+
+        // Self also coordinates
         ai.StateMachine.ChangeState(new AIPackCoordinateState(ai, ai));
     }
+
 
     public void Update() { /* instantaneous—Enter does all work */ }
 
@@ -2388,43 +2696,39 @@ public class AIPackCoordinateState : IState
     public void Enter()
     {
         timer = ai.coordinationTime;
-        // Build pack list (max N)
-        var hits = Physics.OverlapSphere(caller.transform.position, ai.packCallRadius);
-        foreach (var c in hits)
+
+        pack.Clear();
+        int n = Physics.OverlapSphereNonAlloc(caller.transform.position, ai.packCallRadius, PerfBuffers.c64);
+        for (int i = 0; i < n && pack.Count < ai.maxPackSize; i++)
         {
-            if (pack.Count >= ai.maxPackSize) break;
-            if (c.TryGetComponent<CuteAnimalAI>(out var other)
-             && other.animalType == ai.animalType
-             && other.aiType == AIType.AggressiveType3)
+            var col = PerfBuffers.c64[i];
+            if (!col) continue;
+
+            if (col.TryGetComponent<CuteAnimalAI>(out var other)
+                && other.animalType == ai.animalType
+                && other.aiType == AIType.AggressiveType3)
             {
                 pack.Add(other);
             }
         }
-        // Face toward player:
+
         ai.agent.ResetPath();
         ai.transform.LookAt(caller.player.position.Flat());
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
     }
 
+
+
     public void Update()
     {
         timer -= Time.deltaTime;
-        if (timer > 0f)
-            return;
+        if (timer > 0f) return;
 
-        // 2) Gather your pack members (including yourself)
-        var pack = GameObject
-            .FindGameObjectsWithTag(ai.targetTag)          // or however you cache your pack
-            .Select(go => go.GetComponent<CuteAnimalAI>())
-            .Where(a => a != null && a.aiType == AIType.AggressiveType3)
-            .ToList();
-
-        // 3) Figure out your index in the pack
-        int total = pack.Count;
+        // use the pack we built in Enter()
+        int total = Mathf.Max(1, pack.Count);
         int idx = pack.IndexOf(ai);
-        if (idx < 0) idx = 0; // fallback
+        if (idx < 0) idx = 0;
 
-        // 4) Transition into the coordinated chase, handing off your angle slot
         ai.StateMachine.ChangeState(
             new AIPackChaseState(ai, ai.player, idx, total)
         );
@@ -2453,7 +2757,7 @@ public class AIPackAttackState : IState
         // Compute flank target point just off to the side of player
         Vector3 sideOffset = Vector3.Cross(Vector3.up, (ai.player.position - ai.transform.position).Flat().normalized);
         Vector3 target = ai.player.position + flankDirection + sideOffset * 2f;
-        ai.agent.SetDestination(target);
+        ai.SetDestinationSmart(target);
     }
 
     public void Update()
@@ -2463,7 +2767,7 @@ public class AIPackAttackState : IState
         if (dist <= ai.attackRange)
             ai.StateMachine.ChangeState(new AIAttackState(ai));
         else
-            ai.agent.SetDestination(ai.player.position);
+            ai.SetDestinationSmart(ai.player.position);
     }
 
     public void Exit() { }
@@ -2536,7 +2840,7 @@ public class AIPackChaseState : IState
         if (isRearFlanker || isDirectChaser) { ai.agent.speed = baseSpeed * 1.5f; burstTimer = 1f; }
         else ai.agent.speed = baseSpeed;
 
-        ai.agent.SetDestination(interceptPoint);
+        ai.SetDestinationSmart(interceptPoint);
     }
 
 
@@ -2561,7 +2865,7 @@ public class AIPackChaseState : IState
         {
             // Use orbiting angle if enabled, otherwise the static slot
             ComputeIntercept(ai.packOrbitingEnabled ? (float?)orbitAngleDeg : null);
-            ai.agent.SetDestination(interceptPoint);
+            ai.SetDestinationSmart(interceptPoint);
             nextRepathTime = Time.time + ai.packRepathInterval;
         }
 
@@ -2657,7 +2961,7 @@ public class AIPackLungeState : IState
         Vector3 dir = (ai.player.position - ai.transform.position).Flat().normalized;
         targetPoint = ai.player.position + dir * ai.packLungeOvershoot;
 
-        ai.agent.SetDestination(targetPoint);
+        ai.SetDestinationSmart(targetPoint);
         timer = ai.packLungeDuration;
         hit = false;
     }
@@ -2765,7 +3069,7 @@ public class AIJumpAttackState : IState
             }
 
             // Final guard before calling SetDestination
-            ai.agent.SetDestination(ai.player.position);
+            ai.SetDestinationSmart(ai.player.position);
 
             if (Vector3.Distance(ai.transform.position, ai.player.position) <= ai.attackRange)
             {
@@ -2825,7 +3129,7 @@ public class AIJumpReturnHomeState : IState
         {
             Vector3 reachable = ai.FindReachableToward(footPoint);
             if ((reachable - ai.transform.position).sqrMagnitude > 0.2f)
-                ai.agent.SetDestination(reachable);
+                ai.SetDestinationSmart(reachable);
             else
             {
                 // Nothing reachable → jump straight back to perch from here
@@ -2837,7 +3141,7 @@ public class AIJumpReturnHomeState : IState
         }
         else
         {
-            ai.agent.SetDestination(footPoint);
+            ai.SetDestinationSmart(footPoint);
         }
 
         noProgressTimer = NoProgressTimeout;
@@ -2861,7 +3165,7 @@ public class AIJumpReturnHomeState : IState
         {
             Vector3 reachable = ai.FindReachableToward(footPoint);
             if ((reachable - ai.transform.position).sqrMagnitude > 0.2f)
-                ai.agent.SetDestination(reachable);
+                ai.SetDestinationSmart(reachable);
             else
             {
                 startedJump = true;
@@ -2881,7 +3185,7 @@ public class AIJumpReturnHomeState : IState
                 Vector3 reachable = ai.FindReachableToward(footPoint);
                 if (ai.HasCompletePath(reachable))
                 {
-                    ai.agent.SetDestination(reachable);
+                    ai.SetDestinationSmart(reachable);
                     noProgressTimer = NoProgressTimeout;
                 }
                 else

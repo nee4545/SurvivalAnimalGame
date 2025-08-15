@@ -13,6 +13,7 @@ public enum eCuteAnimalAnims
     REST,
     EAT,
     DAMAGE,
+    NONE,
 }
 
 
@@ -20,6 +21,7 @@ public class CuteAnimalAnimHandler : MonoBehaviour
 {
     public Animator animator;
     bool isLocked = false;
+    eCuteAnimalAnims currentAnimState = eCuteAnimalAnims.NONE;
 
     // Start is called before the first frame update
     void Start()
@@ -51,6 +53,11 @@ public class CuteAnimalAnimHandler : MonoBehaviour
     {
         if (isLocked)
             return;
+
+        if (currentAnimState == animation)
+            return;
+
+        currentAnimState = animation;
 
         switch (animation)
         {

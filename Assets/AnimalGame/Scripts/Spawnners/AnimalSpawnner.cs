@@ -1,3 +1,4 @@
+ï»¿using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.AI;
@@ -5,7 +6,7 @@ using UnityEngine.AI;
 public class AnimalSpawner : MonoBehaviour
 {
     public enum PointPickMode { Random, RoundRobin }
-    public enum FaceMode { Random, FaceCenter, KeepPrefab } // default if point doesn’t override
+    public enum FaceMode { Random, FaceCenter, KeepPrefab } // default if point doesnâ€™t override
 
     [Header("Points")]
     [Tooltip("Leave empty to auto-grab AnimalSpawnPoint children.")]
@@ -33,7 +34,17 @@ public class AnimalSpawner : MonoBehaviour
     [Header("Point Selection")]
     public PointPickMode pickMode = PointPickMode.Random;
 
-    // ——— runtime ———
+    // NEW: Scene-wide cap for aggressive animals
+    [Header("Aggressive AI Limit (scene-wide)")]
+    [Tooltip("If ON, limits total count of all aggressive AIs alive in the scene (from ALL spawners + pre-placed).")]
+    public bool limitAggressive = true;
+
+    [Tooltip("Max alive aggressive AIs allowed at once in the scene.")]
+    public int maxAggressiveAlive = 8;
+
+
+
+    // â€”â€”â€” runtime â€”â€”â€”
     float timer;
     Transform player;
     int rrIndex = 0; // round-robin
@@ -82,7 +93,7 @@ public class AnimalSpawner : MonoBehaviour
             if (go) player = go.transform;
         }
 
-        // Respect cap
+        // Respect cap of total alive under this spawner
         int alive = spawnParent ? spawnParent.childCount : 0;
         if (alive >= maxAlive) { timer = spawnInterval; return; }
 
@@ -97,8 +108,8 @@ public class AnimalSpawner : MonoBehaviour
         // Compute position
         if (!TryGetPointSpawnPosition(point, out Vector3 pos)) return;
 
-        // Pick prefab for that point
-        var prefab = PickWeightedPrefab(point.prefabs);
+        // Pick prefab with aggressive limit respected
+        var prefab = PickWeightedPrefabRespectingAggressiveCap(point.prefabs);
         if (!prefab) return;
 
         // Facing (point override or spawner default)
@@ -125,7 +136,7 @@ public class AnimalSpawner : MonoBehaviour
         if (candidates.Count == 0) return null;
 
         if (pickMode == PointPickMode.Random)
-            return candidates[Random.Range(0, candidates.Count)];
+            return candidates[UnityEngine.Random.Range(0, candidates.Count)];
 
         // Round-robin
         rrIndex = (rrIndex + 1) % candidates.Count;
@@ -139,7 +150,7 @@ public class AnimalSpawner : MonoBehaviour
             total += Mathf.Max(0f, list[i].weight);
         if (total <= 0f) return null;
 
-        float r = Random.value * total;
+        float r = UnityEngine.Random.value * total;
         float cum = 0f;
         for (int i = 0; i < list.Count; i++)
         {
@@ -149,22 +160,113 @@ public class AnimalSpawner : MonoBehaviour
         return list[list.Count - 1].prefab;
     }
 
+    // NEW: Prefab picker that respects the scene-wide aggressive cap
+    GameObject PickWeightedPrefabRespectingAggressiveCap(List<AnimalSpawnPoint.WeightedPrefab> list)
+    {
+        if (!limitAggressive) return PickWeightedPrefab(list);
+
+        int currentAggressive = CountAggressiveAliveSceneWide();
+        if (currentAggressive < Mathf.Max(0, maxAggressiveAlive))
+        {
+            // Under cap â†’ normal pick
+            return PickWeightedPrefab(list);
+        }
+
+        // Cap reached â†’ try to pick ONLY non-aggressive prefabs from this point (by weight)
+        float total = 0f;
+        for (int i = 0; i < list.Count; i++)
+        {
+            var w = list[i];
+            if (!w.prefab) continue;
+            if (!IsAggressivePrefab(w.prefab)) total += Mathf.Max(0f, w.weight);
+        }
+        if (total <= 0f)
+        {
+            // No non-aggressive prefabs available here â†’ skip this tick
+            return null;
+        }
+
+        float r = UnityEngine.Random.value * total;
+        float cum = 0f;
+        for (int i = 0; i < list.Count; i++)
+        {
+            var w = list[i];
+            if (!w.prefab) continue;
+            if (IsAggressivePrefab(w.prefab)) continue;
+
+            cum += Mathf.Max(0f, w.weight);
+            if (r <= cum) return w.prefab;
+        }
+        // Fallback (shouldn't really hit)
+        for (int i = list.Count - 1; i >= 0; i--)
+        {
+            var w = list[i];
+            if (w.prefab && !IsAggressivePrefab(w.prefab))
+                return w.prefab;
+        }
+        return null;
+    }
+
+    // Determine if a prefab is an aggressive AI by inspecting its CuteAnimalAI type
+    bool IsAggressivePrefab(GameObject prefab)
+    {
+        if (!prefab) return false;
+        var ai = prefab.GetComponent<CuteAnimalAI>();
+        if (!ai) return false;
+
+        // Treat these as aggressive families
+        var t = ai.aiType;
+        return t == CuteAnimalAI.AIType.Aggressive
+            || t == CuteAnimalAI.AIType.AggressiveType1
+            || t == CuteAnimalAI.AIType.AggressiveType2
+            || t == CuteAnimalAI.AIType.AggressiveType3
+            || t == CuteAnimalAI.AIType.AggressiveJumping;
+        // (If you add AggressiveType4 later, include it here.)
+    }
+
+    // Scene-wide count of currently-alive aggressive AIs
+    int CountAggressiveAliveSceneWide()
+    {
+        var all = GameObject.FindObjectsOfType<CuteAnimalAI>(); // active only
+        int count = 0;
+        for (int i = 0; i < all.Length; i++)
+        {
+            var ai = all[i];
+            if (!ai) continue;
+
+            bool isAgg = ai.aiType == CuteAnimalAI.AIType.Aggressive
+                      || ai.aiType == CuteAnimalAI.AIType.AggressiveType1
+                      || ai.aiType == CuteAnimalAI.AIType.AggressiveType2
+                      || ai.aiType == CuteAnimalAI.AIType.AggressiveType3
+                      || ai.aiType == CuteAnimalAI.AIType.AggressiveJumping;
+
+            if (!isAgg) continue;
+
+            // Exclude dead
+            var h = ai.GetComponent<Health>();
+            if (h != null && h.IsDead) continue;
+
+            count++;
+        }
+        return count;
+    }
+
     bool TryGetPointSpawnPosition(AnimalSpawnPoint point, out Vector3 pos)
     {
-        // roll local offset based on the point’s shape/size
+        // roll local offset based on the pointâ€™s shape/size
         Vector3 local;
         if (point.shape == AnimalSpawnPoint.SpawnShape.Circle)
         {
             float r = Mathf.Max(point.size.x, point.size.z);
-            var flat = Random.insideUnitCircle * r;
+            var flat = UnityEngine.Random.insideUnitCircle * r;
             local = new Vector3(flat.x, 0f, flat.y);
         }
         else
         {
             local = new Vector3(
-                Random.Range(-point.size.x, point.size.x),
-                Random.Range(-point.size.y, point.size.y),
-                Random.Range(-point.size.z, point.size.z));
+                UnityEngine.Random.Range(-point.size.x, point.size.x),
+                UnityEngine.Random.Range(-point.size.y, point.size.y),
+                UnityEngine.Random.Range(-point.size.z, point.size.z));
         }
 
         pos = point.transform.TransformPoint(local);
@@ -182,15 +284,15 @@ public class AnimalSpawner : MonoBehaviour
                 if (point.shape == AnimalSpawnPoint.SpawnShape.Circle)
                 {
                     float r = Mathf.Max(point.size.x, point.size.z);
-                    var flat = Random.insideUnitCircle * r;
+                    var flat = UnityEngine.Random.insideUnitCircle * r;
                     local = new Vector3(flat.x, 0f, flat.y);
                 }
                 else
                 {
                     local = new Vector3(
-                        Random.Range(-point.size.x, point.size.x),
-                        Random.Range(-point.size.y, point.size.y),
-                        Random.Range(-point.size.z, point.size.z));
+                        UnityEngine.Random.Range(-point.size.x, point.size.x),
+                        UnityEngine.Random.Range(-point.size.y, point.size.y),
+                        UnityEngine.Random.Range(-point.size.z, point.size.z));
                 }
                 pos = point.transform.TransformPoint(local);
                 continue;
@@ -211,15 +313,15 @@ public class AnimalSpawner : MonoBehaviour
                         if (point.shape == AnimalSpawnPoint.SpawnShape.Circle)
                         {
                             float r = Mathf.Max(point.size.x, point.size.z);
-                            var flat = Random.insideUnitCircle * r;
+                            var flat = UnityEngine.Random.insideUnitCircle * r;
                             local = new Vector3(flat.x, 0f, flat.y);
                         }
                         else
                         {
                             local = new Vector3(
-                                Random.Range(-point.size.x, point.size.x),
-                                Random.Range(-point.size.y, point.size.y),
-                                Random.Range(-point.size.z, point.size.z));
+                                UnityEngine.Random.Range(-point.size.x, point.size.x),
+                                UnityEngine.Random.Range(-point.size.y, point.size.y),
+                                UnityEngine.Random.Range(-point.size.z, point.size.z));
                         }
                         pos = point.transform.TransformPoint(local);
                         continue;
@@ -244,12 +346,12 @@ public class AnimalSpawner : MonoBehaviour
             {
                 case FaceMode.FaceCenter:
                     Vector3 dir = (point.transform.position - pos); dir.y = 0f;
-                    if (dir.sqrMagnitude < 0.001f) dir = Random.insideUnitSphere;
+                    if (dir.sqrMagnitude < 0.001f) dir = UnityEngine.Random.insideUnitSphere;
                     return Quaternion.LookRotation(dir.normalized);
                 case FaceMode.KeepPrefab:
                     return transform.rotation; // or Quaternion.identity if you prefer
                 default:
-                    return Quaternion.Euler(0f, Random.Range(0f, 360f), 0f);
+                    return Quaternion.Euler(0f, UnityEngine.Random.Range(0f, 360f), 0f);
             }
         }
         else
@@ -258,12 +360,12 @@ public class AnimalSpawner : MonoBehaviour
             {
                 case AnimalSpawnPoint.FaceMode.FaceCenter:
                     Vector3 dir = (point.transform.position - pos); dir.y = 0f;
-                    if (dir.sqrMagnitude < 0.001f) dir = Random.insideUnitSphere;
+                    if (dir.sqrMagnitude < 0.001f) dir = UnityEngine.Random.insideUnitSphere;
                     return Quaternion.LookRotation(dir.normalized);
                 case AnimalSpawnPoint.FaceMode.KeepPrefab:
                     return transform.rotation;
                 default:
-                    return Quaternion.Euler(0f, Random.Range(0f, 360f), 0f);
+                    return Quaternion.Euler(0f, UnityEngine.Random.Range(0f, 360f), 0f);
             }
         }
     }
