@@ -425,6 +425,7 @@ public class CuteAnimalAI : MonoBehaviour
 
         _pathCache = new NavMeshPath();
 
+
         lodNearSq = lodNear * lodNear;
         lodMidSq = lodMid * lodMid;
         lodFarSq = lodFar * lodFar;

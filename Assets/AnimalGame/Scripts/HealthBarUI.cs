@@ -8,8 +8,12 @@ public class HealthBarUI : MonoBehaviour
     [SerializeField] private Slider healthSlider;     // assign or auto-find
     [SerializeField] private GameObject barRoot;      // which GO to show/hide (defaults to slider GO)
 
+    [Header("Visibility")]
+    [Tooltip("If true, the health bar is always visible and won't auto-hide (still hides on death).")]
+    [SerializeField] private bool alwaysVisible = false;
+
     [Header("Behavior")]
-    [SerializeField] private float autoHideDelay = 2.0f; // seconds visible after last hit
+    [SerializeField] private float autoHideDelay = 2.0f; // seconds visible after last hit (ignored if alwaysVisible)
 
     private Health health;
     private Coroutine hideCo;
@@ -20,8 +24,8 @@ public class HealthBarUI : MonoBehaviour
         if (!healthSlider) healthSlider = GetComponentInChildren<Slider>(true);
         if (!barRoot) barRoot = healthSlider ? healthSlider.gameObject : gameObject;
 
-        // start hidden
-        if (barRoot) barRoot.SetActive(false);
+        // Initial visibility
+        if (barRoot) barRoot.SetActive(alwaysVisible);
     }
 
     void OnEnable()
@@ -38,6 +42,9 @@ public class HealthBarUI : MonoBehaviour
             // initialize values
             UpdateHealthBar(health.CurrentHealth, health.MaxHealth);
         }
+
+        // Ensure visible if configured
+        if (alwaysVisible) Show();
     }
 
     void OnDisable()
@@ -56,14 +63,19 @@ public class HealthBarUI : MonoBehaviour
 
     private void OnDamageTaken(float dmg)
     {
-        // show on any damage, refresh value, and restart hide timer
+        // Show on any damage
         Show();
+
+        // refresh value
         if (health) UpdateHealthBar(health.CurrentHealth, health.MaxHealth);
-        RestartHideTimer();
+
+        // Only auto-hide if not always visible
+        if (!alwaysVisible) RestartHideTimer();
     }
 
     private void RestartHideTimer()
     {
+        if (alwaysVisible) return;
         if (hideCo != null) StopCoroutine(hideCo);
         hideCo = StartCoroutine(HideAfterDelay());
     }
@@ -91,5 +103,8 @@ public class HealthBarUI : MonoBehaviour
         if (!healthSlider) return;
         healthSlider.maxValue = max;
         healthSlider.value = current;
+
+        // If set to alwaysVisible, ensure it's shown (useful after pooling)
+        if (alwaysVisible) Show();
     }
 }

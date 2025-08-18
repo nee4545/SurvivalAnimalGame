@@ -102,6 +102,33 @@ public class CCActor : MonoBehaviour
     public float maxStepOffset = 0.25f;      // top speed stepping
     public float runStepOffset = 0.05f;      // nearly zero when sprinting
 
+
+    [Header("Stamina")]
+    [Tooltip("Max stamina value.")]
+    public float maxStamina = 100f;
+
+    [Tooltip("Stamina drain per second while sprinting.")]
+    public float runDrainPerSecond = 25f;
+
+    [Tooltip("Stamina regen per second while walking (not sprinting).")]
+    public float walkRegenPerSecond = 10f;
+
+    [Tooltip("Stamina regen per second while idle (no input).")]
+    public float idleRegenPerSecond = 16f;
+
+    [Tooltip("Need at least this much stamina to START sprinting (prevents stutter at 0).")]
+    public float minToStartRunning = 12f;
+
+    [Tooltip("Delay before stamina starts regenerating after you stop sprinting.")]
+    public float regenDelayAfterSprint = 0.5f;
+
+    [HideInInspector] public float stamina;   // current stamina
+    private float _regenResumeTime;
+
+    public float Stamina01 => (maxStamina <= 0f) ? 0f : Mathf.Clamp01(stamina / maxStamina);
+
+
+
     private float defaultStepOffset;
 
     private VirtualJoystick virtualJoystick;
@@ -164,6 +191,8 @@ public class CCActor : MonoBehaviour
 
         // FSM
         StateMachine = new StateMachine();
+        stamina = maxStamina;
+
     }
 
 
@@ -183,6 +212,38 @@ public class CCActor : MonoBehaviour
         StateMachine.ChangeState(new PlayerIdleState(this));
     }
 
+
+    private void UpdateStamina(bool sprinting, bool moving)
+    {
+        if (maxStamina <= 0f) return; // disabled
+
+        float dt = Time.deltaTime;
+
+        if (sprinting)
+        {
+            stamina -= runDrainPerSecond * dt;
+            _regenResumeTime = Time.time + regenDelayAfterSprint;
+
+            if (stamina <= 0f)
+            {
+                stamina = 0f;
+                isRunning = false; // will force walk next frame
+            }
+        }
+        else
+        {
+            // Regen only after short cooldown
+            if (Time.time >= _regenResumeTime)
+            {
+                float regen = moving ? walkRegenPerSecond : idleRegenPerSecond;
+                stamina += regen * dt;
+                if (stamina > maxStamina) stamina = maxStamina;
+            }
+        }
+    }
+
+
+
     void Update()
     {
         if (isDead) return;
@@ -193,24 +254,44 @@ public class CCActor : MonoBehaviour
         else if (moveAction != null)
             inputVec = moveAction.action.ReadValue<Vector2>();
 
-        // Determine run vs walk
-        isRunning = inputVec.magnitude >= runThreshold;
-        float currentSpeed = isRunning ? runSpeed : walkSpeed;
-
-        // Camera-relative movement direction
+        // Camera-relative movement direction (unchanged above)
         Vector3 camF = Camera.main.transform.forward;
         Vector3 camR = Camera.main.transform.right;
-        camF.y = camR.y = 0f;
-        camF.Normalize(); camR.Normalize();
+        camF.y = camR.y = 0f; camF.Normalize(); camR.Normalize();
         Vector3 inputDir = camF * inputVec.y + camR * inputVec.x;
 
-        // ✅ Smooth acceleration
+        // —— Stamina-gated run vs walk (FIXED) ——
+        bool wantsRun = inputVec.magnitude >= runThreshold;
+        bool moving = inputDir.sqrMagnitude > 0.01f;
+
+        bool lastIsRunning = isRunning;                  // remember previous state
+        bool canStartRun = stamina >= minToStartRunning;
+
+        // Only keep sprinting if player STILL wants to run, is MOVING, and has stamina
+        bool keepSprinting = lastIsRunning && wantsRun && moving && stamina > 0.01f;
+
+        // If not moving at all, force sprint off
+        if (!moving) isRunning = false;
+
+        // New sprint state
+        isRunning = (wantsRun && moving && canStartRun) || keepSprinting;
+
+        // If we just stopped sprinting, start regen cooldown now
+        if (lastIsRunning && !isRunning)
+            _regenResumeTime = Time.time + regenDelayAfterSprint;
+
+        // Update stamina after deciding sprint state
+        UpdateStamina(isRunning, moving);
+
+        // Speed & movement (unchanged)
+        float currentSpeed = isRunning ? runSpeed : walkSpeed;
         Vector3 targetVelocity = inputDir.normalized * currentSpeed;
         currentVelocity = Vector3.Lerp(currentVelocity, targetVelocity, acceleration * Time.deltaTime);
         moveDirection = currentVelocity;
 
         float speed01 = Mathf.InverseLerp(walkSpeed, runSpeed, currentVelocity.magnitude);
         controller.stepOffset = Mathf.Lerp(maxStepOffset, runStepOffset, speed01);
+
 
         // Update timers
         attackTimer -= Time.deltaTime;
