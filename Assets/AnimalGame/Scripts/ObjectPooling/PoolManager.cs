@@ -77,8 +77,12 @@ public static class PoolManager
 
         if (go.TryGetComponent<NavMeshAgent>(out var agent))
         {
-            if (agent.enabled) agent.ResetPath();
-            agent.isStopped = true;
+                if (agent.isActiveAndEnabled && agent.isOnNavMesh)
+                {
+                    agent.ResetPath();
+                    agent.velocity = Vector3.zero;
+                    agent.isStopped = true;
+                }
         }
 
         go.transform.SetParent(Root, false);

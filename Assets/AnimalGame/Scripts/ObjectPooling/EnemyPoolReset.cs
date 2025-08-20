@@ -52,7 +52,15 @@ public class EnemyPoolReset : MonoBehaviour, IPoolable
 
     public void OnDespawned()
     {
-        if (agent) { agent.isStopped = true; agent.ResetPath(); }
+        if (agent)
+        {
+            if (agent.isActiveAndEnabled && agent.isOnNavMesh)
+            {
+                agent.ResetPath();
+                agent.velocity = Vector3.zero;
+                agent.isStopped = true;
+            }
+        }
         if (ai) ai.StopAllCoroutines();
     }
 }

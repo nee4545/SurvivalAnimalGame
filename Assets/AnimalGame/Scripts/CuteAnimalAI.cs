@@ -134,6 +134,7 @@ public class CuteAnimalAI : MonoBehaviour
     public int maxChargeAttempts = 3;
     [Tooltip("Cooldown before charge attempts reset.")]
     public float chargeCooldownDuration = 4f;
+    public float chargeDetectionRange = 5f;
 
     [Header("😤 Retaliation (AggressiveType2)")]
     [Tooltip("Delay to switch from flee to hunt after provoked.")]
@@ -142,6 +143,22 @@ public class CuteAnimalAI : MonoBehaviour
     [Header("🐆 AggressiveType4 (Chase Tuning)")]
     [Tooltip("Randomize per-agent speeds/turn to avoid robotic packs (Type4 only).")]
     public bool randomizeAggressiveStats = true;
+
+    [Header("🐆 AggressiveType4 Surges (optional)")]
+    public bool t4Surges = true;                         // master toggle
+    [Tooltip("Random time between surges (seconds).")]
+    public Vector2 t4SurgeEvery = new Vector2(3.5f, 6f); // next surge window
+    [Tooltip("Speed x this during the surge.")]
+    public float t4SurgeMultiplier = 1.6f;
+    [Tooltip("How long the burst lasts.")]
+    public float t4SurgeDuration = 1.2f;
+    [Tooltip("Speed x this while 'tired' after the surge.")]
+    public float t4FatigueMultiplier = 0.85f;
+    [Tooltip("How long the tired phase lasts.")]
+    public float t4FatigueDuration = 1.0f;
+    [Tooltip("How fast to lerp NavMeshAgent.speed toward the phase target.")]
+    public float t4SpeedSmoothing = 8f; // higher = snappier
+
 
     [Tooltip("Multiplier range applied to wander/chase/flee for Type4 at spawn.")]
     public Vector2 speedRandomRange = new Vector2(0.9f, 1.1f);
@@ -329,6 +346,20 @@ public class CuteAnimalAI : MonoBehaviour
 
     private NavMeshPath _pathCache;
 
+    [Header("🧯 Anti-Stuck")]
+    [Tooltip("Below this speed we consider the agent stalled.")]
+    public float stuckSpeedEps = 0.02f;
+    [Tooltip("If we move less than this since last check, we count it as no progress.")]
+    public float stuckMinDistance = 0.25f;
+    [Tooltip("How long (sec) of no progress before we try to fix.")]
+    public float stuckTimeout = 1.2f;
+    [Tooltip("How far from an edge we try to nudge inward to feel safe.")]
+    public float edgeSafeDistance = 1.0f;
+
+    private Vector3 _stuckLastPos;
+    private float _stuckTimer;
+
+
 
     [Header("⚡ Performance")]
     [Tooltip("Distances at which we reduce AI work. Sq = squared for cheap compares")]
@@ -366,7 +397,67 @@ public class CuteAnimalAI : MonoBehaviour
     [HideInInspector] private Vector3 _playerPrevPos;
 
 
+    private void StuckTick()
+    {
+        if (agent == null || !agent.enabled || !agent.isOnNavMesh)
+        {
+            _stuckTimer = 0f;
+            _stuckLastPos = transform.position;
+            return;
+        }
 
+        float moved = (transform.position - _stuckLastPos).magnitude;
+        bool farFromGoal = agent.hasPath && agent.remainingDistance > 0.5f;
+        bool lowSpeed = agent.velocity.sqrMagnitude < (stuckSpeedEps * stuckSpeedEps);
+        bool noProgress = moved < stuckMinDistance;
+
+        if (farFromGoal && lowSpeed && noProgress)
+        {
+            _stuckTimer += Time.deltaTime;
+
+            if (_stuckTimer >= stuckTimeout)
+            {
+                // 1) If close to an edge, nudge inward along edge normal
+                if (NavMesh.FindClosestEdge(transform.position, out var edgeHit, NavMesh.AllAreas) &&
+                    edgeHit.distance < edgeSafeDistance * 2f)
+                {
+                    Vector3 inward = (transform.position - edgeHit.position).Flat().normalized;
+                    float push = Mathf.Max(edgeSafeDistance - edgeHit.distance, 0.5f);
+                    Vector3 candidate = transform.position + inward * push;
+
+                    if (NavMesh.SamplePosition(candidate, out var hit, 2f, NavMesh.AllAreas))
+                    {
+                        SetDestinationSmart(hit.position);
+                        _stuckTimer = 0f;
+                        _stuckLastPos = transform.position;
+                        return;
+                    }
+                }
+
+                // 2) Fan-search a few probes around forward
+                for (int i = 0; i < 6; i++)
+                {
+                    float ang = (i % 2 == 0 ? 1f : -1f) * (15f + 15f * (i / 2)); // ±15°, ±30°, ±45°
+                    Vector3 dir = Quaternion.Euler(0f, ang, 0f) * transform.forward;
+                    Vector3 probe = transform.position + dir * 1.5f;
+
+                    if (NavMesh.SamplePosition(probe, out var hit, 1.5f, NavMesh.AllAreas))
+                    {
+                        SetDestinationSmart(hit.position);
+                        break;
+                    }
+                }
+
+                _stuckTimer = 0f;
+            }
+        }
+        else
+        {
+            _stuckTimer = 0f;
+        }
+
+        _stuckLastPos = transform.position;
+    }
 
 
     private bool TryResolvePlayer(bool force = false)
@@ -1065,11 +1156,13 @@ public class CuteAnimalAI : MonoBehaviour
         else
         {
             // Skip brain this frame; still allow lightweight animation updates below
+            StuckTick();
             return;
         }
 
         // 6) Otherwise, let the normal state machine run
         StateMachine.Update();
+        StuckTick();
 
     }
 
@@ -1355,7 +1448,7 @@ public class AIRestState : IState
         }
         else if (ai.aiType == AIType.AggressiveType1)
         {
-            if (!ai.isChargeCooldownActive && dist <= ai.detectionRange)
+            if (!ai.isChargeCooldownActive && dist <= ai.chargeDetectionRange)
             {
                 ai.agent.isStopped = true;
                 ai.StateMachine.ChangeState(new AIWindupState(ai));
@@ -1456,6 +1549,10 @@ public class AIRestState : IState
 public class AIChaseType4State : IState
 {
     private CuteAnimalAI ai;
+    private enum SpeedPhase { Normal, Surge, Fatigue }
+    private SpeedPhase phase;
+    private float phaseTimer;
+    private float nextSurgeAt;
 
     public AIChaseType4State(CuteAnimalAI ai) { this.ai = ai; }
 
@@ -1464,6 +1561,12 @@ public class AIChaseType4State : IState
         ai.agent.speed = ai.chaseSpeed * ai.runtimeSpeedMul;
         ai.agent.stoppingDistance = ai.stopDistance;
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+
+        // Surge cycle init
+        phase = SpeedPhase.Normal;
+        phaseTimer = 0f;
+        nextSurgeAt = Time.time + Random.Range(ai.t4SurgeEvery.x, ai.t4SurgeEvery.y);
+
     }
 
     public void Update()
@@ -1491,16 +1594,58 @@ public class AIChaseType4State : IState
         // Turn with a capped rate
         ai.RotateTowards(desiredDir, ai.runtimeTurnRateDeg);
 
-        // Slow down on sharp turns to curve better (less overshoot)
+        // Turn-based slowdown (your code)
         float angleError = Vector3.Angle(ai.transform.forward.Flat(), desiredDir);
         float slowT = Mathf.InverseLerp(0f, Mathf.Max(1f, ai.turnSlowdownAngle), angleError);
-        float speedFactor = Mathf.Lerp(1f, ai.turnSlowdownMinFactor, slowT);
-        ai.agent.speed = ai.chaseSpeed * ai.runtimeSpeedMul * speedFactor;
+        float turnSpeedFactor = Mathf.Lerp(1f, ai.turnSlowdownMinFactor, slowT);
 
-        // Throttled destination
+        // ⬇️ Surge cycle
+        float phaseMul = 1f;
+        if (ai.t4Surges)
+        {
+            switch (phase)
+            {
+                case SpeedPhase.Normal:
+                    if (Time.time >= nextSurgeAt)
+                    {
+                        phase = SpeedPhase.Surge;
+                        phaseTimer = ai.t4SurgeDuration;
+                    }
+                    break;
+
+                case SpeedPhase.Surge:
+                    phaseMul = ai.t4SurgeMultiplier;
+                    phaseTimer -= Time.deltaTime;
+                    if (phaseTimer <= 0f)
+                    {
+                        phase = SpeedPhase.Fatigue;
+                        phaseTimer = ai.t4FatigueDuration;
+                    }
+                    break;
+
+                case SpeedPhase.Fatigue:
+                    phaseMul = ai.t4FatigueMultiplier;
+                    phaseTimer -= Time.deltaTime;
+                    if (phaseTimer <= 0f)
+                    {
+                        phase = SpeedPhase.Normal;
+                        nextSurgeAt = Time.time + Random.Range(ai.t4SurgeEvery.x, ai.t4SurgeEvery.y);
+                    }
+                    break;
+            }
+        }
+
+        // Base speed × turn slowdown × surge/fatigue multiplier
+        float baseSpeed = ai.chaseSpeed * ai.runtimeSpeedMul * turnSpeedFactor;
+        float targetSpeed = baseSpeed * phaseMul;
+
+        // Smooth so it feels organic
+        ai.agent.speed = Mathf.Lerp(ai.agent.speed, targetSpeed, ai.t4SpeedSmoothing * Time.deltaTime);
+
+        // Throttled destination (your code)
         ai.SetDestinationSmart(chaseTarget);
 
-        // Require both range and facing before attacking
+        // Attack gate (your code)
         if (distanceToPlayer <= ai.attackRange && angleError <= ai.facingConeToAttack)
         {
             ai.StateMachine.ChangeState(new AIAttackState(ai));
@@ -1557,7 +1702,7 @@ public class AIWanderState : IState
 
         if (ai.aiType == AIType.AggressiveType1)
         {
-            if (!ai.isChargeCooldownActive && distanceToPlayer <= ai.detectionRange)
+            if (!ai.isChargeCooldownActive && distanceToPlayer <= ai.chargeDetectionRange)
             {
                 ai.StateMachine.ChangeState(new AIWindupState(ai));
                 return;
@@ -1778,7 +1923,10 @@ public class AIAttackState : IState
             }
             else if (distanceToPlayer <= ai.detectionRange)
             {
-                ai.StateMachine.ChangeState(new AIChaseState(ai));
+                if (ai.aiType == CuteAnimalAI.AIType.AggressiveType4)
+                    ai.StateMachine.ChangeState(new AIChaseType4State(ai));
+                else
+                    ai.StateMachine.ChangeState(new AIChaseState(ai));
             }
             else
             {
@@ -1798,6 +1946,16 @@ public class AIFleeState : IState
     private float burstMultiplier = 1.5f;
     private float burstDuration = 0.5f;
 
+    private float noProgressTimer;
+    private Vector3 lastPos;
+    private const float stuckTimeout = 0.6f;
+
+    private ObstacleAvoidanceType _prevAvoidance;
+    private int _prevPriority;
+    private bool _prevAutoBraking;
+    private float _prevStopDist;
+
+
     public AIFleeState(CuteAnimalAI ai) { this.ai = ai; }
 
     public void Enter()
@@ -1805,7 +1963,22 @@ public class AIFleeState : IState
         burstTimer = burstDuration;
         ai.agent.speed = ai.fleeSpeed * burstMultiplier;
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+
+        // Save & force motion-friendly settings
+        _prevAvoidance = ai.agent.obstacleAvoidanceType;
+        _prevPriority = ai.agent.avoidancePriority;
+        _prevAutoBraking = ai.agent.autoBraking;
+        _prevStopDist = ai.agent.stoppingDistance;
+
+        ai.agent.autoBraking = false;
+        ai.agent.obstacleAvoidanceType = ObstacleAvoidanceType.NoObstacleAvoidance;
+        ai.agent.avoidancePriority = 20;         // higher priority to push through crowds (lower number = higher priority)
+        ai.agent.stoppingDistance = 0f;
+
+        lastPos = ai.transform.position;
+        noProgressTimer = 0f;
     }
+
 
     public void Update()
     {
@@ -1852,7 +2025,60 @@ public class AIFleeState : IState
         if (safeTarget != Vector3.zero)
             ai.SetDestinationSmart(safeTarget, forceNow: true);
 
+
+        // --- Constant-motion anti-stuck ---
+        float movedSq = (ai.transform.position - lastPos).sqrMagnitude;
+        if (movedSq < 0.01f * 0.01f) // ~1cm this frame
+            noProgressTimer += Time.deltaTime;
+        else
+            noProgressTimer = 0f;
+        lastPos = ai.transform.position;
+
+        // Path got partial or we've made no progress → slide tangentially along the edge away from player
+        if (noProgressTimer >= stuckTimeout || ai.agent.pathStatus == NavMeshPathStatus.PathPartial)
+        {
+            if (TryEdgeSlide(out var slideTo))
+            {
+                ai.SetDestinationSmart(slideTo, forceNow: true);
+                // tiny impulse so the slide is visible this frame
+                Vector3 nudge = (slideTo - ai.transform.position).Flat().normalized;
+                ai.agent.Move(nudge * ai.fleeSpeed * 0.25f * Time.deltaTime);
+            }
+            noProgressTimer = 0f;
+        }
     }
+
+
+    bool TryEdgeSlide(out Vector3 slideTo)
+    {
+        slideTo = ai.transform.position;
+        if (NavMesh.FindClosestEdge(ai.transform.position, out var edge, NavMesh.AllAreas))
+        {
+            // Tangent along the edge
+            Vector3 tangent = Vector3.Cross(Vector3.up, edge.normal).normalized;
+
+            // Pick the tangential direction that increases distance from player
+            Vector3 candA = ai.transform.position + tangent * 2.5f;
+            Vector3 candB = ai.transform.position - tangent * 2.5f;
+
+            Vector3 better = candA;
+            if (ai.player)
+            {
+                float dA = Vector3.Distance(candA, ai.player.position);
+                float dB = Vector3.Distance(candB, ai.player.position);
+                better = (dA > dB) ? candA : candB;
+            }
+
+            if (NavMesh.SamplePosition(better, out var hit, 1.5f, NavMesh.AllAreas) &&
+                ai.HasCompletePath(hit.position))
+            {
+                slideTo = hit.position;
+                return true;
+            }
+        }
+        return false;
+    }
+
 
     private Vector3 ComputeSafeFleeDirection()
     {
@@ -1883,12 +2109,17 @@ public class AIFleeState : IState
     {
         if (NavMesh.SamplePosition(candidate, out var hit, ai.fleeRange, NavMesh.AllAreas))
         {
-            if (NavMesh.FindClosestEdge(hit.position, out var edgeHit, NavMesh.AllAreas))
+            // Only accept points with a complete path
+            if (ai.HasCompletePath(hit.position))
             {
-                if (edgeHit.distance > ai.navMeshEdgeThreshold)
-                    return hit.position;
+                if (NavMesh.FindClosestEdge(hit.position, out var edgeHit, NavMesh.AllAreas))
+                {
+                    if (edgeHit.distance > ai.navMeshEdgeThreshold)
+                        return hit.position;
+                }
             }
         }
+
 
         for (int i = 0; i < ai.fleeAttempts; i++)
         {
@@ -1907,7 +2138,13 @@ public class AIFleeState : IState
         return ai.transform.position;
     }
 
-    public void Exit() { }
+    public void Exit()
+    {
+        ai.agent.autoBraking = _prevAutoBraking;
+        ai.agent.obstacleAvoidanceType = _prevAvoidance;
+        ai.agent.avoidancePriority = _prevPriority;
+        ai.agent.stoppingDistance = _prevStopDist;
+    }
 }
 
 // ================== KNOCKBACK STATE ==================
@@ -2059,7 +2296,6 @@ public class AIChargeState : IState
             ai.companionRotationLerp * Time.deltaTime
         );
 
-
         // 2) Collision check on the way through
         if (!hasHitPlayer && ai.player != null)
         {
@@ -2068,36 +2304,48 @@ public class AIChargeState : IState
             {
                 if (ai.player.TryGetComponent<Health>(out var hp))
                     hp.TakeDamage(ai.chargeDamage);
+
                 hasHitPlayer = true;
+
+                // 🔒 Immediately arm cooldown so we won't wind up again until we go home & recover
+                ai.isChargeCooldownActive = true;
+                ai.chargeCooldownTimer = ai.chargeCooldownDuration;
             }
         }
 
-        // 3) Termination: either we've timed out, reached the overshoot, or hit the player
-        bool reachedOvershoot = !ai.agent.pathPending
-                                && ai.agent.remainingDistance <= 0.1f;
+        // 3) Termination: timed out, reached overshoot, or hit the player
+        bool reachedOvershoot = !ai.agent.pathPending && ai.agent.remainingDistance <= 0.1f;
+
         if (timer <= 0f || reachedOvershoot || hasHitPlayer)
         {
-            // If we still have more charges available and close enough, we can wind up again...
-            if (ai.currentChargeAttempts < ai.maxChargeAttempts
-                && Vector3.Distance(ai.transform.position, ai.player.position) <= ai.attackRange)
+            // ✅ If we successfully hit, always go home to reset before another charge
+            if (hasHitPlayer)
             {
-                ai.StateMachine.ChangeState(new AIWindupState(ai));
+                ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+                return;
             }
-            // Otherwise fall back to a normal chase
-            else if (Vector3.Distance(ai.transform.position, ai.player.position) <= ai.detectionRange)
-            {
-                ai.StateMachine.ChangeState(new AIChaseState(ai));
-            }
-            else
-            {
-                ai.StateMachine.ChangeState(new AIRestState(ai));
-            }
+
+            // Missed: we may chain more attempts if close enough
+            //if (ai.currentChargeAttempts < ai.maxChargeAttempts
+            //    && Vector3.Distance(ai.transform.position, ai.player.position) <= ai.attackRange)
+            //{
+            //    ai.StateMachine.ChangeState(new AIWindupState(ai));
+            //}
+            //else if (Vector3.Distance(ai.transform.position, ai.player.position) <= ai.detectionRange)
+            //{
+            //    ai.StateMachine.ChangeState(new AIChaseState(ai));
+            //}
+            //else
+            //{
+            //    ai.StateMachine.ChangeState(new AIRestState(ai));
+            //}
+
+            ai.StateMachine.ChangeState(new AIRestState(ai));
         }
     }
 
     public void Exit()
     {
-        // Restore auto‐rotation so other states can use it
         ai.agent.updateRotation = true;
     }
 }

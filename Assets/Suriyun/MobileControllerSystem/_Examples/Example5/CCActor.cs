@@ -292,7 +292,6 @@ public class CCActor : MonoBehaviour
         float speed01 = Mathf.InverseLerp(walkSpeed, runSpeed, currentVelocity.magnitude);
         controller.stepOffset = Mathf.Lerp(maxStepOffset, runStepOffset, speed01);
 
-
         // Update timers
         attackTimer -= Time.deltaTime;
         autoAttackTimer -= Time.deltaTime;
