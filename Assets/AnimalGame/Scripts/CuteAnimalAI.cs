@@ -19,7 +19,7 @@ public static class PerfBuffers
 public class CuteAnimalAI : MonoBehaviour
 {
     public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AggressiveType3, Companion , AggressiveJumping, AggressiveType4 }
-    public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich }
+    public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich, Bunny, Squirrel, Bull, Tiger, Monkey, Gorlilla, Lizard, Flamingo, AntEater }
 
     [Header("🧠 AI Behavior Type")]
     [Tooltip("Overall behavior pattern of this animal.")]
@@ -66,6 +66,14 @@ public class CuteAnimalAI : MonoBehaviour
     public float alignmentWeight = 1f;
     [Tooltip("Weight of neighbor cohesion.")]
     public float cohesionWeight = 1f;
+
+    [Header("🗺️ Territory (Aggressive)")]
+    [Tooltip("If true, Aggressive will never chase beyond a radius around its spawn.")]
+    public bool territorialAggressive = false;
+
+    [Tooltip("Max radius (from spawnPosition) that Aggressive will chase into.")]
+    public float aggressiveTerritoryRadius = 15f;
+
 
     [Header("⚔️ Combat Settings")]
     [Tooltip("Melee attack range.")]
@@ -139,6 +147,11 @@ public class CuteAnimalAI : MonoBehaviour
     [Header("😤 Retaliation (AggressiveType2)")]
     [Tooltip("Delay to switch from flee to hunt after provoked.")]
     public float retaliationDelay = 3f;
+    [Header("🗺️ Territory (AggressiveType2)")]
+    [Tooltip("If true, Type2 will never chase beyond a radius around its spawn.")]
+    public bool territorial = true;
+    [Tooltip("Max radius (from spawnPosition) that Type2 will chase into.")]
+    public float territoryRadius = 15f;
 
     [Header("🐆 AggressiveType4 (Chase Tuning)")]
     [Tooltip("Randomize per-agent speeds/turn to avoid robotic packs (Type4 only).")]
@@ -396,6 +409,18 @@ public class CuteAnimalAI : MonoBehaviour
     [HideInInspector] public Vector3 playerVelocitySmoothed;
     [HideInInspector] private Vector3 _playerPrevPos;
 
+
+    public bool IsPlayerOutsideTerritory()
+    {
+        if (!player) return false;
+        return Vector3.Distance(spawnPosition, player.position) > territoryRadius;
+    }
+
+    public bool IsOutsideAggressiveTerritory()
+    {
+        if (!player) return false;
+        return Vector3.Distance(spawnPosition, player.position) > aggressiveTerritoryRadius;
+    }
 
     private void StuckTick()
     {
@@ -1414,7 +1439,29 @@ public class AIRestState : IState
                 return;
             }
         }
-        else if (ai.aiType == AIType.Aggressive || ai.aiType == AIType.AggressiveType4)
+        else if (ai.aiType == AIType.Aggressive)
+        {
+            if (ai.territorialAggressive && ai.IsOutsideAggressiveTerritory())
+            {
+                // Don’t just idle forever; go home right now.
+                ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+                return;
+            }
+
+            if (dist <= ai.attackRange)
+            {
+                ai.agent.isStopped = false;
+                ai.StateMachine.ChangeState(new AIAttackState(ai));
+                return;
+            }
+            if (dist <= ai.detectionRange)
+            {
+                ai.agent.isStopped = false;
+                ai.StateMachine.ChangeState(new AIChaseState(ai));
+                return;
+            }
+        }
+        else if (ai.aiType == AIType.AggressiveType4)
         {
             if (dist <= ai.attackRange)
             {
@@ -1448,14 +1495,23 @@ public class AIRestState : IState
         }
         else if (ai.aiType == AIType.AggressiveType1)
         {
-            if (!ai.isChargeCooldownActive && dist <= ai.chargeDetectionRange)
+            if (!ai.isChargeCooldownActive && ai.currentChargeAttempts < ai.maxChargeAttempts && dist <= ai.chargeDetectionRange)
             {
                 ai.agent.isStopped = true;
                 ai.StateMachine.ChangeState(new AIWindupState(ai));
                 return;
             }
+
+            // If we’ve exhausted attempts but haven’t started cooldown yet, go home & cool down
+            if (!ai.isChargeCooldownActive && ai.currentChargeAttempts >= ai.maxChargeAttempts)
+            {
+                ai.isChargeCooldownActive = true;
+                ai.chargeCooldownTimer = ai.chargeCooldownDuration;
+                ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+                return;
+            }
         }
-        else if(ai.aiType == AIType.AggressiveType3)
+        else if (ai.aiType == AIType.AggressiveType3)
         {
             if (dist <= ai.detectionRange)
             {
@@ -1702,12 +1758,47 @@ public class AIWanderState : IState
 
         if (ai.aiType == AIType.AggressiveType1)
         {
-            if (!ai.isChargeCooldownActive && distanceToPlayer <= ai.chargeDetectionRange)
+            if (!ai.isChargeCooldownActive && ai.currentChargeAttempts < ai.maxChargeAttempts && distanceToPlayer <= ai.chargeDetectionRange)
             {
                 ai.StateMachine.ChangeState(new AIWindupState(ai));
                 return;
             }
+
+            if (!ai.isChargeCooldownActive && ai.currentChargeAttempts >= ai.maxChargeAttempts)
+            {
+                ai.isChargeCooldownActive = true;
+                ai.chargeCooldownTimer = ai.chargeCooldownDuration;
+                ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+                return;
+            }
         }
+
+        if (ai.aiType == CuteAnimalAI.AIType.Aggressive)
+        {
+            if (ai.territorialAggressive && ai.IsOutsideAggressiveTerritory())
+            {
+                // Don't engage outside territory
+                // Optionally walk back if we've drifted; otherwise just keep wandering
+                if (Vector3.Distance(ai.transform.position, ai.spawnPosition) > ai.homeRadius * 0.8f)
+                {
+                    ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+                    return;
+                }
+            }
+            if (distanceToPlayer <= ai.attackRange)
+            {
+                ai.agent.isStopped = false;
+                ai.StateMachine.ChangeState(new AIAttackState(ai));
+                return;
+            }
+            if (distanceToPlayer <= ai.detectionRange)
+            {
+                ai.agent.isStopped = false;
+                ai.StateMachine.ChangeState(new AIChaseState(ai));
+                return;
+            }
+        }
+
 
         if (ai.aiType == AIType.AggressiveType2 && ai.wasProvoked)
         {
@@ -1724,7 +1815,7 @@ public class AIWanderState : IState
         }
 
         // ✅ Aggressive → chase or attack if close
-        if (ai.aiType == CuteAnimalAI.AIType.Aggressive || ai.aiType == CuteAnimalAI.AIType.AggressiveType4)
+        if (ai.aiType == CuteAnimalAI.AIType.AggressiveType4)
         {
             if (distanceToPlayer <= ai.attackRange)
             {
@@ -1859,6 +1950,22 @@ public class AIChaseState : IState
 
     public void Update()
     {
+
+        // NEW: Territorial leash for AggressiveType2
+        if (ai.aiType == CuteAnimalAI.AIType.Aggressive
+        && ai.territorialAggressive
+        && ai.IsOutsideAggressiveTerritory())
+        {
+            ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+            return;
+        }
+
+        if (ai.aiType == CuteAnimalAI.AIType.AggressiveType2 && ai.territorial && ai.IsPlayerOutsideTerritory())
+        {
+            ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+            return;
+        }
+
         float distanceToPlayer = ai.DistanceToPlayer();
 
         if (distanceToPlayer > ai.detectionRange)
@@ -1911,6 +2018,13 @@ public class AIAttackState : IState
             Vector3 dir = (ai.player.position - ai.transform.position);
             dir.y = 0;
             ai.RotateTowards(dir);
+        }
+
+        // NEW: Territorial leash for AggressiveType2
+        if (ai.aiType == CuteAnimalAI.AIType.AggressiveType2 && ai.territorial && ai.IsPlayerOutsideTerritory())
+        {
+            ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+            return;
         }
 
         timer -= Time.deltaTime;
@@ -2255,6 +2369,13 @@ public class AIChargeState : IState
     {
         // 1) Increase attempt count & set up agent
         ai.currentChargeAttempts++;
+
+        if (ai.currentChargeAttempts >= ai.maxChargeAttempts)
+        {
+            ai.isChargeCooldownActive = true;
+            ai.chargeCooldownTimer = ai.chargeCooldownDuration;
+        }
+
         ai.agent.speed = ai.chargeSpeed;
         ai.agent.ResetPath();
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
@@ -2325,22 +2446,18 @@ public class AIChargeState : IState
                 return;
             }
 
-            // Missed: we may chain more attempts if close enough
-            //if (ai.currentChargeAttempts < ai.maxChargeAttempts
-            //    && Vector3.Distance(ai.transform.position, ai.player.position) <= ai.attackRange)
-            //{
-            //    ai.StateMachine.ChangeState(new AIWindupState(ai));
-            //}
-            //else if (Vector3.Distance(ai.transform.position, ai.player.position) <= ai.detectionRange)
-            //{
-            //    ai.StateMachine.ChangeState(new AIChaseState(ai));
-            //}
-            //else
-            //{
-            //    ai.StateMachine.ChangeState(new AIRestState(ai));
-            //}
+            bool haveAttemptsLeft = ai.currentChargeAttempts < ai.maxChargeAttempts;
+            bool playerClose = ai.player && Vector3.Distance(ai.transform.position, ai.player.position) <= ai.chargeDetectionRange;
 
-            ai.StateMachine.ChangeState(new AIRestState(ai));
+            if (!ai.isChargeCooldownActive && haveAttemptsLeft && playerClose)
+            {
+                ai.StateMachine.ChangeState(new AIWindupState(ai));
+                return;
+            }
+
+            // Otherwise, go home (will cool down if we hit the cap)
+            ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+            return;
         }
     }
 
@@ -2468,42 +2585,137 @@ public class AIFleeVeryEasyState : IState
     public void Exit() { }
 }
 
+// In CuteAnimalAI.cs
+
 public class AIReturnToBaseState : IState
 {
-    private CuteAnimalAI ai;
-    private float restTimer = 4f;
+    private readonly CuteAnimalAI ai;
+    private float restTimer;
+    private float stuckTimer;
+    private Vector3 lastPos;
 
-    public AIReturnToBaseState(CuteAnimalAI ai)
-    {
-        this.ai = ai;
-    }
+    public AIReturnToBaseState(CuteAnimalAI ai) { this.ai = ai; }
 
     public void Enter()
     {
-        ai.SetDestinationSmart(ai.spawnPosition);
+        ai.agent.isStopped = false;
+        ai.agent.updateRotation = true;
         ai.agent.speed = ai.wanderSpeed;
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.WALK);
+
+        restTimer = 1;
+        stuckTimer = 0f;
+        lastPos = ai.transform.position;
+
+        // First target toward home (use a reachable step if needed)
+        Vector3 target = ai.spawnPosition;
+        if (!ai.HasCompletePath(target))
+            target = ai.FindReachableToward(target);
+
+        ai.SetDestinationSmart(target, forceNow: true);
     }
 
     public void Update()
     {
+        // 0) Allow interrupts: if we should re-engage, do it now.
+        TryInterruptForCombat();
+
+        // 1) Re-path if current path is partial/invalid
+        if (!ai.agent.pathPending && ai.agent.pathStatus != NavMeshPathStatus.PathComplete)
+        {
+            Vector3 step = ai.FindReachableToward(ai.spawnPosition);
+            ai.SetDestinationSmart(step, forceNow: true);
+        }
+
+        // 2) Stuck watchdog: if not moving meaningfully, nudge a re-path
+        float moved = (ai.transform.position - lastPos).sqrMagnitude;
+        lastPos = ai.transform.position;
+
+        if (!ai.agent.pathPending && ai.agent.velocity.sqrMagnitude < 0.01f && moved < 0.0004f)
+        {
+            stuckTimer += Time.deltaTime;
+            if (stuckTimer > 1.25f)
+            {
+                // Nudge: pick another reachable step toward home
+                Vector3 step = ai.FindReachableToward(ai.spawnPosition);
+                ai.SetDestinationSmart(step, forceNow: true);
+                stuckTimer = 0f;
+            }
+        }
+        else
+        {
+            stuckTimer = 0f;
+        }
+
+        // 3) Done going home?
         float distanceToSpawn = Vector3.Distance(ai.transform.position, ai.spawnPosition);
+        if (distanceToSpawn > ai.homeRadius * 0.5f) return;
 
-        if (distanceToSpawn > ai.homeRadius * 0.5f)
-            return; // Keep walking home
-
+        // 4) Rest a beat, then hand back to Rest state
         ai.agent.isStopped = true;
-        restTimer -= Time.deltaTime;
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.EAT);
 
+        restTimer -= Time.deltaTime;
         if (restTimer <= 0f)
         {
+            ai.agent.isStopped = false;
             ai.StateMachine.ChangeState(new AIRestState(ai));
         }
     }
 
-    public void Exit() { }
+    private void TryInterruptForCombat()
+    {
+        if (!ai.player) return;
+
+        float dist = ai.DistanceToPlayer();
+
+        // Plain Aggressive with territorial leash: only re-engage if player is INSIDE territory
+        if (ai.aiType == CuteAnimalAI.AIType.Aggressive)
+        {
+            if (ai.territorialAggressive && ai.IsOutsideAggressiveTerritory())
+                return; // stay on course home
+
+            // Inside leash (or leash off) – normal engage rules
+            if (dist <= ai.attackRange)
+            {
+                ai.StateMachine.ChangeState(new AIAttackState(ai));
+                return;
+            }
+            if (dist <= ai.detectionRange)
+            {
+                ai.StateMachine.ChangeState(new AIChaseState(ai));
+                return;
+            }
+        }
+
+        // AggressiveType2/others that “re-engage when provoked”
+        if (ai.aiType == CuteAnimalAI.AIType.AggressiveType2 && ai.wasProvoked)
+        {
+            // If you also made Type2 territorial, gate it similarly:
+            if (ai.territorial && ai.IsPlayerOutsideTerritory())
+                return;
+
+            if (dist <= ai.attackRange)
+            {
+                ai.StateMachine.ChangeState(new AIAttackState(ai));
+                return;
+            }
+            if (dist <= ai.detectionRange)
+            {
+                ai.StateMachine.ChangeState(new AIChaseState(ai));
+                return;
+            }
+        }
+
+        // Add similar blocks for other AI types if you want them to interrupt the “go home” too.
+    }
+
+    public void Exit()
+    {
+        ai.agent.isStopped = false;
+    }
 }
+
 
 public class AIFleeThenHuntState : IState
 {
@@ -2533,6 +2745,14 @@ public class AIFleeThenHuntState : IState
 
     public void Update()
     {
+
+        // NEW: If player leaves territory during the flee window, give up and go home
+        if (ai.aiType == CuteAnimalAI.AIType.AggressiveType2 && ai.territorial && ai.IsPlayerOutsideTerritory())
+        {
+            ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+            return;
+        }
+
         // 1) Countdown
         timer -= Time.deltaTime;
 
@@ -2555,6 +2775,11 @@ public class AIFleeThenHuntState : IState
         // 3) Once timer expires and we're safely away, switch to chase
         if (ai.DistanceToPlayer() >= ai.fleeRange * 1.2f)
         {
+            if (ai.aiType == CuteAnimalAI.AIType.AggressiveType2 && ai.territorial && ai.IsPlayerOutsideTerritory())
+            {
+                ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
+                return;
+            }
             // Re-enable obstacle avoidance
             ai.agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
             ai.StateMachine.ChangeState(new AIChaseState(ai));
