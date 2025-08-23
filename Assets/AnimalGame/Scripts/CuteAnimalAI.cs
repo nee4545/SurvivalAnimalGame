@@ -19,7 +19,7 @@ public static class PerfBuffers
 public class CuteAnimalAI : MonoBehaviour
 {
     public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AggressiveType3, Companion , AggressiveJumping, AggressiveType4 }
-    public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich, Bunny, Squirrel, Bull, Tiger, Monkey, Gorlilla, Lizard, Flamingo, AntEater }
+    public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich, Bunny, Squirrel, Bull, Tiger, Monkey, Gorlilla, Lizard, Flamingo, AntEater, Crocodile }
 
     [Header("🧠 AI Behavior Type")]
     [Tooltip("Overall behavior pattern of this animal.")]
@@ -859,7 +859,7 @@ public class CuteAnimalAI : MonoBehaviour
 
     public void Death()
     {
-        StartCoroutine(DespawnOrDestroyAfter(0.25f));
+        StartCoroutine(DespawnOrDestroyAfter(0.75f));
     }
 
     public Transform GetNearestJumpSpot(Vector3 from)

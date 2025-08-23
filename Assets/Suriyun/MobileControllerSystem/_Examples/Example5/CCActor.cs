@@ -66,6 +66,17 @@ public class CCActor : MonoBehaviour
     [Header("Attack Settings")]
     public float attackCooldown = 1f;
 
+    [Header("Attack Facing")]
+    [Tooltip("If true, player must face the target (within a cone) to attack.")]
+    public bool requireFacing = true;
+
+    [Tooltip("Half-angle of the facing cone in degrees (e.g., 70 = 140° total).")]
+    [Range(0f, 180f)] public float requiredFacingAngle = 70f;
+
+    [Tooltip("Forward offset for the melee hit sphere from the player.")]
+    public float hitForwardOffset = 1.0f; // replaces the hardcoded 1.0f
+
+
     private Vector3 currentVelocity;  // New: for smooth acceleration
     [Header("Advanced Movement")]
     public float acceleration = 10f;  // New: tweak this for snappier or slower response
@@ -173,6 +184,20 @@ public class CCActor : MonoBehaviour
             _ground.angleDeg = 0f;
         }
     }
+
+    private bool IsFacing(Transform target)
+    {
+        if (!target) return false;
+        Vector3 to = target.position - transform.position;
+        to.y = 0f;
+        if (to.sqrMagnitude < 0.0001f) return true;
+
+        to.Normalize();
+        float dot = Vector3.Dot(transform.forward, to);
+        float cos = Mathf.Cos(requiredFacingAngle * Mathf.Deg2Rad);
+        return dot >= cos;
+    }
+
 
 
     void Awake()
@@ -314,12 +339,16 @@ public class CCActor : MonoBehaviour
 
     public void AutoAttackLoop()
     {
-        // pick nearest valid target in range
+        // pick nearest valid target in auto-aggro radius
         Transform t = FindNearestEnemy();
+
         if (t != null && t.TryGetComponent<Health>(out var hp) && !hp.IsDead)
         {
             float d = Vector3.Distance(transform.position, t.position);
-            if (d <= attackRange)
+            bool facingOk = !requireFacing || IsFacing(t);
+
+            // Only keep/enter attack loop if within hard attack range AND facing (if required)
+            if (d <= attackRange && facingOk)
             {
                 currentTarget = t;
                 isAttackingLoop = true;
@@ -330,16 +359,19 @@ public class CCActor : MonoBehaviour
                 // cooldown tick
                 if (autoAttackTimer <= 0f)
                 {
-                    // simple melee cone/arc in front
-                    Vector3 hitCenter = transform.position + transform.forward * 1.0f;
+                    // melee hit sphere positioned in front, aligned with forward
+                    Vector3 hitCenter = transform.position + transform.forward * hitForwardOffset;
+
                     Collider[] hits = Physics.OverlapSphere(hitCenter, attackHitRadius, enemyLayer);
                     foreach (var h in hits)
                     {
                         if (h.TryGetComponent<Health>(out var eh) && !eh.IsDead)
                         {
+                            // Optional: also require hit angle for each collider if you want stricter arcs
+                            // if (requireFacing && !IsFacing(h.transform)) continue;
+
                             eh.TakeDamage(attackDamage);
 
-                            // optional: light push
                             if (h.TryGetComponent<CuteAnimalAI>(out var ai))
                             {
                                 Vector3 kb = (h.transform.position - transform.position).normalized;
@@ -351,14 +383,23 @@ public class CCActor : MonoBehaviour
                     autoAttackTimer = autoAttackCooldown;
                 }
 
-                return; // keep attacking, do not touch movement/rotation
+                return; // stay in attack loop
+            }
+
+            // If in aggro radius but NOT facing (or slightly out of attackRange), optionally rotate toward target
+            if (!disableAttackRotation && d <= autoAttackRadius)
+            {
+                Vector3 to = (t.position - transform.position);
+                to.y = 0f;
+                RotateTowards(to);
             }
         }
 
-        // no valid target -> stop attack loop
+        // no valid target in attack cone -> stop attack loop
         currentTarget = null;
         isAttackingLoop = false;
     }
+
 
     public void UpdateLocomotionAnimation()
     {

@@ -27,6 +27,7 @@ public class CuteAnimalAnimHandler : MonoBehaviour
     void Start()
     {
         animator = GetComponent<Animator>();
+        SetAnimation(eCuteAnimalAnims.IDLE);
     }
 
     // Update is called once per frame
