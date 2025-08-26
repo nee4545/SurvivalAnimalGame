@@ -19,7 +19,7 @@ public static class PerfBuffers
 public class CuteAnimalAI : MonoBehaviour
 {
     public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AggressiveType3, Companion , AggressiveJumping, AggressiveType4 }
-    public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich, Bunny, Squirrel, Bull, Tiger, Monkey, Gorlilla, Lizard, Flamingo, AntEater, Crocodile }
+    public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich, Bunny, Squirrel, Bull, Tiger, Monkey, Gorlilla, Lizard, Flamingo, AntEater, Crocodile, Leapord, Meerkat }
 
     [Header("🧠 AI Behavior Type")]
     [Tooltip("Overall behavior pattern of this animal.")]
@@ -792,13 +792,6 @@ public class CuteAnimalAI : MonoBehaviour
         // Visuals — restore tint & clear overrides
         ClearAllPropertyBlocks();
 
-        // Companion retarget cache (optional)
-        if (aiType == AIType.Companion)
-        {
-            var objs = GameObject.FindGameObjectsWithTag(targetTag);
-            potentialTargets = new List<Transform>(objs.Select(o => o.transform));
-        }
-
         // Per-agent variance for Type4 only
         runtimeSpeedMul = 1f;
         runtimeTurnRateDeg = turnRateDeg;
@@ -825,29 +818,59 @@ public class CuteAnimalAI : MonoBehaviour
         }
     }
 
+    private LayerMask WhatIsTarget()
+    {
+        // This assumes your target animals are on a layer called "Animals" or similar.
+        // You MUST set this up in your project for performance.
+        return LayerMask.GetMask("Enemy");
+    }
+
 
     public Transform GetClosestAnimalTarget()
     {
-        Transform best = null;
-        float bestDist = Mathf.Infinity;
+        // If it's not a companion, it doesn't need to target anything.
+        if (aiType != AIType.Companion)
+            return null;
 
-        foreach (var t in potentialTargets)
+        // Use the pre-allocated performance buffer
+        int numFound = Physics.OverlapSphereNonAlloc(transform.position, companionDetectionRange, PerfBuffers.c32, WhatIsTarget());
+
+        // If nothing was found, log it and return null (optional debug)
+        // if (numFound == 0) Debug.Log("No colliders found in sphere.");
+
+        Transform bestTarget = null;
+        float closestDistanceSqr = Mathf.Infinity;
+        Vector3 myPosition = transform.position;
+
+        // Iterate through all colliders found
+        for (int i = 0; i < numFound; i++)
         {
-            if (t == null) continue;
-
-            // Skip dead animals
-            if (t.TryGetComponent<Health>(out var h) && h.IsDead)
+            Collider candidate = PerfBuffers.c32[i];
+            if (candidate == null || !candidate.CompareTag(targetTag))
                 continue;
 
-            float d = Vector3.Distance(transform.position, t.position);
-            if (d < bestDist)
+            // Check if the candidate has a Health component and is alive
+            Health candidateHealth = candidate.GetComponent<Health>();
+            if (candidateHealth == null || candidateHealth.IsDead)
+                continue;
+
+            // Check if the target is within the allowed chase distance from the player (the tether)
+            if (player != null && Vector3.Distance(candidate.transform.position, player.position) > maxChaseDistance)
+                continue;
+
+            // Finally, find the closest one that passed all filters
+            float distSqr = (candidate.transform.position - myPosition).sqrMagnitude;
+            if (distSqr < closestDistanceSqr)
             {
-                bestDist = d;
-                best = t;
+                closestDistanceSqr = distSqr;
+                bestTarget = candidate.transform;
             }
         }
 
-        return (best != null && bestDist <= companionDetectionRange) ? best : null;
+        // Optional: Debug log the result
+        // Debug.Log($"{gameObject.name} found target: {(bestTarget != null ? bestTarget.name : "None")}");
+
+        return bestTarget;
     }
 
     public IEnumerator DespawnOrDestroyAfter(float delay)
