@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -14,6 +15,7 @@ public class Health : MonoBehaviour
     [Header("Events")]
     public UnityEvent onDeath;
     public UnityEvent<float> onDamageTaken;        // emits damage amount
+    public event Action<Transform /*victim*/, Transform /*attacker*/> Damaged;
 
     // (current, max)
     public System.Action<float, float> onHealthChanged;
@@ -33,13 +35,14 @@ public class Health : MonoBehaviour
         onHealthChanged?.Invoke(currentHealth, maxHealth);
     }
 
-    public void TakeDamage(float damage)
+    public void TakeDamage(float damage, Transform attacker = null)
     {
         if (IsDead) return;
         if (damage <= 0f) return;
 
         currentHealth = Mathf.Max(0f, currentHealth - damage);
         onDamageTaken?.Invoke(damage);
+        Damaged?.Invoke(transform, attacker);
         onHealthChanged?.Invoke(currentHealth, maxHealth);
 
         if (currentHealth <= 0f && !IsDead)
