@@ -75,7 +75,7 @@ public class Health : MonoBehaviour
         currentHealth = 0f;
         IsDead = true;
         onHealthChanged?.Invoke(currentHealth, maxHealth);
-        Die();
+        //Die();
     }
 
     public void Heal(float amount)

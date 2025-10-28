@@ -1650,6 +1650,8 @@ public class CuteAnimalAI : MonoBehaviour
     void OnDeath()
     {
         StateMachine.ChangeState(new AIDeadState(this));
+        GetComponent<LootDropper>()?.OnDeathDrop();
+
     }
 
     public Vector3 GetBoidTarget(Vector3 baseTarget)

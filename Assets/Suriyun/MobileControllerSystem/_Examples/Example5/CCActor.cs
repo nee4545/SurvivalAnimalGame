@@ -138,6 +138,29 @@ public class CCActor : MonoBehaviour
 
     public float Stamina01 => (maxStamina <= 0f) ? 0f : Mathf.Clamp01(stamina / maxStamina);
 
+    [Header("Hunger")]
+    [Tooltip("Max hunger value. 0 means disabled.")]
+    public float maxHunger = 100f;
+
+    [Tooltip("Hunger drain per second (always-on, unless paused).")]
+    public float hungerDrainPerSecond = 2f;
+
+    [Tooltip("HP damage per second while hunger is at 0.")]
+    public float starvationDamagePerSecond = 5f;
+
+    [Tooltip("Optional extra hunger drain while sprinting.")]
+    public float sprintBonusHungerDrain = 0f;
+
+    [Tooltip("Pause hunger drain (e.g., cutscenes).")]
+    public bool pauseHungerDrain = false;
+
+    [HideInInspector] public float hunger;   // current hunger (0..maxHunger)
+    public float Hunger01 => (maxHunger <= 0f) ? 0f : Mathf.Clamp01(hunger / maxHunger);
+
+    // Internals
+    private float _starveDamageAccum; // accumulates fractional starvation damage
+    [HideInInspector] public Health health;  // player health reference
+
 
 
     private float defaultStepOffset;
@@ -211,12 +234,17 @@ public class CCActor : MonoBehaviour
         controller.skinWidth = 0.04f;      // helps grounding stability
         controller.minMoveDistance = 0f;
 
+        health = health ?? GetComponent<Health>();
+
         // Anim handler
         animHandler = animHandler ?? GetComponentInChildren<CuteAnimalAnimHandler>();
 
         // FSM
         StateMachine = new StateMachine();
         stamina = maxStamina;
+
+        hunger = Mathf.Clamp(maxHunger, 0f, Mathf.Max(0.0001f, maxHunger)); // start full if enabled
+        _starveDamageAccum = 0f;
 
     }
 
@@ -236,6 +264,51 @@ public class CCActor : MonoBehaviour
         // Init FSM
         StateMachine.ChangeState(new PlayerIdleState(this));
     }
+
+
+    private void UpdateHunger(bool sprinting)
+    {
+        if (maxHunger <= 0f || pauseHungerDrain || isDead) return; // disabled or paused
+
+        float dt = Time.deltaTime;
+
+        // Drain
+        float drain = hungerDrainPerSecond + (sprinting ? sprintBonusHungerDrain : 0f);
+        if (drain > 0f)
+        {
+            hunger -= drain * dt;
+            if (hunger < 0f) hunger = 0f;
+        }
+
+        // Starvation
+        if (hunger <= 0f && health != null && !health.IsDead)
+        {
+            // Convert DPS to integer damage events without changing Health API
+            _starveDamageAccum += starvationDamagePerSecond * dt;
+            int whole = (int)_starveDamageAccum;
+            if (whole > 0)
+            {
+                _starveDamageAccum -= whole;
+                health.TakeDamage(whole);
+                if (health.IsDead)
+                {
+                    OnDeath();
+                }
+            }
+        }
+    }
+
+    /// <summary>Adds hunger (e.g., when eating). Positive heals hunger. Returns actual added amount.</summary>
+    public float AddHunger(float amount)
+    {
+        if (maxHunger <= 0f) return 0f;
+        float before = hunger;
+        hunger = Mathf.Clamp(hunger + amount, 0f, maxHunger);
+        return hunger - before;
+    }
+
+    /// <summary>Fully refill hunger (utility).</summary>
+    public void RefillHunger() => hunger = maxHunger;
 
 
     private void UpdateStamina(bool sprinting, bool moving)
@@ -307,6 +380,7 @@ public class CCActor : MonoBehaviour
 
         // Update stamina after deciding sprint state
         UpdateStamina(isRunning, moving);
+        UpdateHunger(isRunning);
 
         // Speed & movement (unchanged)
         float currentSpeed = isRunning ? runSpeed : walkSpeed;
