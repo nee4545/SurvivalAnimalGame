@@ -45,7 +45,7 @@ public static class PoolManager
         var pool = GetOrCreatePool(prefab);
         GameObject go = pool.stack.Count > 0 ? pool.stack.Pop() : CreateInstance(prefab, parent);
 
-        if (go.transform.parent != parent) go.transform.SetParent(parent, false);
+        if (go.transform.parent != parent) go.transform.SetParent(parent, true);
         go.transform.SetPositionAndRotation(pos, rot);
         go.SetActive(true);
 

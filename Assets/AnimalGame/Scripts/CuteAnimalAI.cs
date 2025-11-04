@@ -338,6 +338,8 @@ public class CuteAnimalAI : MonoBehaviour
     private Color _originalTint;
     private string _colorProp = "_BaseColor";
 
+    private LootDropper lootDropper;
+
     // Runtime cache
     [HideInInspector] public List<Transform> potentialTargets;
 
@@ -816,10 +818,6 @@ public class CuteAnimalAI : MonoBehaviour
             var spots = GameObject.FindGameObjectsWithTag(jumpSpotTag);
             jumpSpots = new List<Transform>(spots.Select(s => s.transform));
         }
-      
-
-        if (health != null)
-            health.onDeath.AddListener(OnDeath);
 
         // Let old or dead attackers drop out
         if (lastAttacker)
@@ -827,6 +825,8 @@ public class CuteAnimalAI : MonoBehaviour
             if (Time.time > _lastAttackerExpireAt || !IsValidTarget(lastAttacker))
                 lastAttacker = null;
         }
+
+        lootDropper = GetComponent<LootDropper>();
 
     }
 
@@ -1650,8 +1650,12 @@ public class CuteAnimalAI : MonoBehaviour
     void OnDeath()
     {
         StateMachine.ChangeState(new AIDeadState(this));
-        GetComponent<LootDropper>()?.OnDeathDrop();
-
+        if(lootDropper)
+        {
+            Vector3 deathPos = transform.position;
+            Quaternion deathRot = transform.rotation;
+            lootDropper.DropAt(deathPos,deathRot);
+        }
     }
 
     public Vector3 GetBoidTarget(Vector3 baseTarget)

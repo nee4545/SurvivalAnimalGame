@@ -1,7 +1,7 @@
 using System.Collections;
 using UnityEngine;
 
-public class LootDropper : MonoBehaviour
+public class LootDropper : MonoBehaviour, IPoolable
 {
     [Header("Prefabs (pooled)")]
     public GameObject xpPrefab;         // always one
@@ -31,34 +31,44 @@ public class LootDropper : MonoBehaviour
 
     bool _hasDropped = false;
 
+    public Transform lootOrigin;
+
     private void Awake()
     {
         _hasDropped = false;
     }
+    public void OnSpawned() { _hasDropped = false; }
+    public void OnDespawned() { }
 
-    public void OnDeathDrop()
+    public void DropAt(Vector3 deathPos, Quaternion deathRot)
     {
         if (_hasDropped) return;
         _hasDropped = true;
-        StartCoroutine(DropRoutine());
+
+        Vector3 originPos = lootOrigin ? lootOrigin.position : deathPos;
+        // keep Y from deathPos or use originPos.y, your call; I'd use originPos.y:
+        originPos.y = lootOrigin ? lootOrigin.position.y : deathPos.y;
+
+        CoroutineRunner.I.StartCoroutine(DropRoutineAt(originPos, deathRot));
     }
 
-    IEnumerator DropRoutine()
+    IEnumerator DropRoutineAt(Vector3 deathPos, Quaternion deathRot)
     {
-        yield return new WaitForSeconds(dropDelay);
+        if (dropDelay > 0f)
+            yield return new WaitForSeconds(dropDelay);
 
-        Vector3 center = transform.position + Vector3.up * spawnHeight;
+        // Use the captured death position, NOT transform.position
+        Vector3 center = deathPos + Vector3.up * spawnHeight;
 
         // XP
         if (xpPrefab)
         {
-            
             Vector3 xpPos = FindGroundedPoint(center);
-            float yOffset = 0.5f;
-            xpPos.y += yOffset;
+            // (optional) remove the artificial lift to reduce drift
+            xpPos.y += 0.5f;  // <- comment this out if you don't want the lift
             var xp = PoolManager.Spawn(xpPrefab, xpPos, Random.rotation);
             SetLifetime(xp, xpLifetime);
-            //Toss(xp);
+            // Toss(xp); // optional tiny settle pop
         }
 
         // Meat
@@ -66,17 +76,18 @@ public class LootDropper : MonoBehaviour
         for (int i = 0; i < count; i++)
         {
             if (meatPrefabs == null || meatPrefabs.Length == 0) break;
-            var meatPrefab = meatPrefabs[Random.Range(0, meatPrefabs.Length)];
 
+            var meatPrefab = meatPrefabs[Random.Range(0, meatPrefabs.Length)];
             Vector2 r = Random.insideUnitCircle.normalized * Random.Range(scatterRadius * 0.35f, scatterRadius);
             Vector3 pos = center + new Vector3(r.x, 0f, r.y);
+            pos.y += 1.5f;
             pos = FindGroundedPoint(pos);
 
             var go = PoolManager.Spawn(meatPrefab, pos, Random.rotation);
             SetLifetime(go, meatLifetime);
             Toss(go);
 
-            yield return null; // stagger for organic feel
+            yield return null; // organic staggering
         }
     }
 
@@ -101,7 +112,7 @@ public class LootDropper : MonoBehaviour
         rb.isKinematic = false;
 
         Vector3 dir = Random.onUnitSphere; dir.y = Mathf.Abs(dir.y); dir.Normalize();
-        rb.AddForce(dir * outwardForce + Vector3.up * upwardForce, ForceMode.VelocityChange);
+        rb.AddForce(dir * outwardForce + Vector3.up * (upwardForce), ForceMode.VelocityChange);
         rb.AddTorque(Random.onUnitSphere * torqueForce, ForceMode.VelocityChange);
 
         // settle then stop rolling forever

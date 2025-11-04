@@ -10,6 +10,12 @@ public class CameraSystem : MonoBehaviour {
     public float speed;
     public FollowMode mode;
 
+    private void Awake()
+    {
+        QualitySettings.vSyncCount = 0;
+        Application.targetFrameRate = 60;
+    }
+
     private void Start() {
         cam = GetComponent<Camera>();
         offset = cam.transform.position - target.position;
