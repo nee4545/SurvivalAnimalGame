@@ -22,7 +22,7 @@ public class CameraSystem : MonoBehaviour {
 
     }
 
-    private void Update() {
+    private void LateUpdate() {
         if (mode == FollowMode.Absolute) {
             transform.position = target.position + offset;
         }

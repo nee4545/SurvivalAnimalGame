@@ -888,6 +888,17 @@ public class CuteAnimalAI : MonoBehaviour
         // Per-type reaction:
         switch (aiType)
         {
+
+            case AIType.AggressiveType4:
+                {
+                    float dist = Vector3.Distance(transform.position, attacker.position);
+                    if (dist <= attackRange)
+                        StateMachine.ChangeState(new AIAttackState(this, attacker));
+                    else
+                        StateMachine.ChangeState(new AIChaseType4State(this));
+                    break;
+                }
+
             case AIType.AggressiveType2:
                 // Keep Type2's character: flee briefly, then hunt THAT attacker
                 retaliationTarget = attacker;
@@ -900,7 +911,6 @@ public class CuteAnimalAI : MonoBehaviour
             case AIType.Aggressive:
             case AIType.AggressiveType1:
             case AIType.AggressiveType3:
-            case AIType.AggressiveType4:
             case AIType.AggressiveJumping:
                 // Snap focus to the attacker
                 float d = Vector3.Distance(transform.position, attacker.position);
@@ -2497,7 +2507,15 @@ public class AIAttackState : IState
             }
             else if (d <= ai.detectionRange)
             {
-                ai.StateMachine.ChangeState(new AIChaseState(ai, attackTarget));
+                // ✅ Preserve special chase behavior for Type4
+                if (ai.aiType == CuteAnimalAI.AIType.AggressiveType4)
+                {
+                    ai.StateMachine.ChangeState(new AIChaseType4State(ai));
+                }
+                else
+                {
+                    ai.StateMachine.ChangeState(new AIChaseState(ai, attackTarget));
+                }
             }
             else
             {
