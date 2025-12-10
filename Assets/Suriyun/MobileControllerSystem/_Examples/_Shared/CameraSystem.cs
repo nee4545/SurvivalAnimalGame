@@ -12,8 +12,7 @@ public class CameraSystem : MonoBehaviour {
 
     private void Awake()
     {
-        QualitySettings.vSyncCount = 0;
-        Application.targetFrameRate = 60;
+
     }
 
     private void Start() {

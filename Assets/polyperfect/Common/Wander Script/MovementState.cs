@@ -1,5 +1,4 @@
 ﻿using System;
-using UnityEngine;
 
 namespace Polyperfect.Common
 {
@@ -9,6 +8,5 @@ namespace Polyperfect.Common
     public float maxStateTime = 40f;
     public float moveSpeed = 3f;
     public float turnSpeed = 120f;
-    public Vector3 RotationOffset;
   }
 }

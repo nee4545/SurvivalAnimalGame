@@ -4,36 +4,6 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using Terresquall;
 
-#region FSM CORE
-
-public interface IState
-{
-    void Enter();
-    void Update();
-    void Exit();
-}
-
-public class StateMachine
-{
-    private IState currentState;
-
-    public IState CurrentState => currentState;
-
-    public void ChangeState(IState newState)
-    {
-        currentState?.Exit();
-        currentState = newState;
-        currentState?.Enter();
-    }
-
-    public void Update()
-    {
-        currentState?.Update();
-    }
-}
-
-#endregion
-
 #region CCActor WITH FSM
 
 [RequireComponent(typeof(CharacterController))]

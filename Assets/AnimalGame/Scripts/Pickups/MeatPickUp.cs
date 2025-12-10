@@ -7,8 +7,9 @@ public class MeatPickup : PickupBase
     public bool spin = true;
     public float spinSpeed = 180f;
 
-    void Update()
+    protected override void Update()
     {
+        base.Update();
         if (spin) transform.Rotate(0f, spinSpeed * Time.deltaTime, 0f, Space.World);
     }
 

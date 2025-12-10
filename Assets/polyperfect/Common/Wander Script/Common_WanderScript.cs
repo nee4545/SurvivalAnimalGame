@@ -130,9 +130,6 @@ namespace Polyperfect.Common
 
         private float turnSpeed = 0f;
 
-        private Vector3 currentRotationOffset = Vector3.zero;
-        private float currentRotationSpeed = 0f;
-
         public enum WanderState
         {
             Idle,
@@ -555,7 +552,7 @@ namespace Polyperfect.Common
             else
                 characterController.SimpleMove(moveSpeed * UnityEngine.Vector3.ProjectOnPlane(targetPosition - position,Vector3.up).normalized);
 
-            transform.GetChild(0).transform.localRotation = Quaternion.Slerp(transform.GetChild(0).transform.localRotation, Quaternion.Euler(currentRotationOffset), Time.deltaTime * currentRotationSpeed);
+
         }
 
         void FaceDirection(Vector3 facePosition)
@@ -771,6 +768,7 @@ namespace Polyperfect.Common
             }
         }
 
+
         void ClearAnimatorBools()
         {
             foreach (var item in idleStates) 
@@ -801,8 +799,6 @@ namespace Polyperfect.Common
             if (navMeshAgent && navMeshAgent.isOnNavMesh)
                 navMeshAgent.destination = transform.position;
             enabled = false;
-            currentRotationOffset = Vector3.zero;
-            currentRotationSpeed = 20;
         }
 
         void HandleBeginAttack()
@@ -812,8 +808,6 @@ namespace Polyperfect.Common
             ClearAnimatorBools();
             TrySetBool(attackingStates[attackState].animationBool,true);
             attackingEvent.Invoke();
-            currentRotationOffset = Vector3.zero;
-            currentRotationSpeed = 20;
         }
 
         void HandleBeginEvade()
@@ -847,8 +841,6 @@ namespace Polyperfect.Common
             moveSpeed = maxSpeed;
             ClearAnimatorBools();
             TrySetBool(moveState.animationBool,true);
-            currentRotationOffset = moveState.RotationOffset;
-            currentRotationSpeed = moveState.turnSpeed;
         }
 
         void SetMoveSlow()
@@ -870,8 +862,6 @@ namespace Polyperfect.Common
             moveSpeed = minSpeed;
             ClearAnimatorBools();
             TrySetBool(moveState.animationBool, true);
-            currentRotationOffset = moveState.RotationOffset;
-            currentRotationSpeed = moveState.turnSpeed;
         }
         void HandleBeginIdle()
         {
@@ -890,8 +880,6 @@ namespace Polyperfect.Common
                 break;
             }
             idleEvent.Invoke();
-            currentRotationOffset = Vector3.zero;
-            currentRotationSpeed = 20;
         }
         void HandleBeginWander()
         {

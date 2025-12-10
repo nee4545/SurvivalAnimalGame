@@ -1,10 +1,42 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.UIElements;
 using static CuteAnimalAI;
+
+
+#region FSM CORE
+
+public interface IState
+{
+    void Enter();
+    void Update();
+    void Exit();
+}
+
+public class StateMachine
+{
+    private IState currentState;
+
+    public IState CurrentState => currentState;
+
+    public void ChangeState(IState newState)
+    {
+        currentState?.Exit();
+        currentState = newState;
+        currentState?.Enter();
+    }
+
+    public void Update()
+    {
+        currentState?.Update();
+    }
+}
+
+#endregion
 
 public static class PerfBuffers
 {
@@ -19,8 +51,8 @@ public static class PerfBuffers
 [RequireComponent(typeof(NavMeshAgent))]
 public class CuteAnimalAI : MonoBehaviour
 {
-    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AggressiveType3, Companion , AggressiveJumping, AggressiveType4 }
-    public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich, Bunny, Squirrel, Bull, Tiger, Monkey, Gorlilla, Lizard, Flamingo, AntEater, Crocodile, Leapord, Meerkat }
+    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AggressiveType3, Companion , AggressiveJumping, AggressiveType4, PassiveHerd }
+    public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich, Bunny, Squirrel, Bull, Tiger, Monkey, Gorlilla, Lizard, Flamingo, AntEater, Crocodile, Leapord, Meerkat, Boar, Buffalo }
 
     [Header("🧠 AI Behavior Type")]
     [Tooltip("Overall behavior pattern of this animal.")]
@@ -57,6 +89,16 @@ public class CuteAnimalAI : MonoBehaviour
 
     [Tooltip("Radius for random wander target selection.")]
     public float wanderRadius = 10f;
+
+    [Header("🏠 Flee → Home Constraint")]
+    [Tooltip("If true, once this animal flees far enough from its spawn, its flee direction is biased back towards its spawn/home instead of out to the map edges.")]
+    public bool preferHomeWhenFleeing = false;
+
+    [Tooltip("Distance from spawn AFTER WHICH we START biasing flee direction back towards home.")]
+    public float fleeHomeStartRadius = 20f;
+
+    [Tooltip("Once bias is active, we keep it until animal comes BACK INSIDE this radius.")]
+    public float fleeHomeStopRadius = 15f;
 
     [Header("🤝 Flocking Settings")]
     [Tooltip("Min spacing to avoid crowding.")]
@@ -115,6 +157,22 @@ public class CuteAnimalAI : MonoBehaviour
     public float zigzagSpeed = 6f;
     [Tooltip("Zigzag lateral offset strength.")]
     public float zigzagStrength = 0.5f;
+
+    [Header("🧓 PassiveHerd Tuning")]
+    [Tooltip("How strongly agents stay together while fleeing as a herd (0..2).")]
+    [Range(0f, 2f)] public float herdCohesionWeightWhileFleeing = 1.0f;
+
+    [Tooltip("How strongly agents avoid bunching while fleeing (0..2).")]
+    [Range(0f, 2f)] public float herdSeparationWeightWhileFleeing = 0.8f;
+
+    [Tooltip("How long to keep tight cohesion before scattering once safe (sec).")]
+    public float herdTightFleeSeconds = 1.5f;
+
+    [Tooltip("Once safe, scatter around this radius band (min..max).")]
+    public Vector2 herdScatterRadius = new Vector2(3f, 8f);
+
+    [Tooltip("Safe once threat is beyond fleeRange × this factor.")]
+    public float herdSafeFactor = 2.3f;
 
     [Header("🧓 Herding (Passive)")]
     [Tooltip("Radius to detect/join herd.")]
@@ -405,20 +463,20 @@ public class CuteAnimalAI : MonoBehaviour
 
     [Header("⚡ Performance")]
     [Tooltip("Distances at which we reduce AI work. Sq = squared for cheap compares")]
-    public float lodNear = 15f;
-    public float lodMid = 40f;
-    public float lodFar = 80f;
-    public float lodCull = 120f;  // beyond this, full sleep (agent off)
+    private float lodNear = 15f;
+    private float lodMid = 40f;
+    private float lodFar = 80f;
+    private float lodCull = 120f;  // beyond this, full sleep (agent off)
 
     [Tooltip("How often heavy brain runs by LOD")]
-    public float thinkIntervalNear = 0.0f;  // every frame
-    public float thinkIntervalMid = 0.15f; // ~7 fps
-    public float thinkIntervalFar = 0.5f;  // 2 fps
+    private float thinkIntervalNear = 0.0f;  // every frame
+    private float thinkIntervalMid = 0.15f; // ~7 fps
+    private float thinkIntervalFar = 0.5f;  // 2 fps
 
     [Tooltip("How often we recompute destinations / queries by LOD")]
-    public float navIntervalNear = 0.05f;   // 20 fps
-    public float navIntervalMid = 0.25f;   // 4 fps
-    public float navIntervalFar = 0.75f;   // ~1.3 fps
+    private float navIntervalNear = 0.05f;   // 20 fps
+    private float navIntervalMid = 0.25f;   // 4 fps
+    private float navIntervalFar = 0.75f;   // ~1.3 fps
 
     [Tooltip("How often to re-evaluate LOD buckets (seconds)")]
     public float lodEvalInterval = 0.5f;
@@ -440,6 +498,12 @@ public class CuteAnimalAI : MonoBehaviour
 
    
     private float lastAttackerMemory = 0.5f;
+    
+    [System.NonSerialized]
+    public bool herdPanicActive;
+
+    [System.NonSerialized]
+    public bool fleeHomeBiasActive;
 
     [HideInInspector] public Transform lastAttacker;
     private float _lastAttackerExpireAt;
@@ -465,6 +529,116 @@ public class CuteAnimalAI : MonoBehaviour
         if (health != null && health.IsDead) return true;
         return false;
     }
+
+    public void AlertHerdOfThreat()
+    {
+        // Only relevant for PassiveHerd
+        if (aiType != AIType.PassiveHerd)
+            return;
+
+        // Look for nearby herd-mates
+        int count = Physics.OverlapSphereNonAlloc(transform.position, herdPanicRadius, PerfBuffers.c64);
+        for (int i = 0; i < count; i++)
+        {
+            var col = PerfBuffers.c64[i];
+            if (!col) continue;
+
+            if (!col.TryGetComponent<CuteAnimalAI>(out var other))
+                continue;
+
+            // Same AI type & species, ignore self
+            if (other == this) continue;
+            if (other.aiType != AIType.PassiveHerd) continue;
+            if (other.animalType != this.animalType) continue;
+            if (other.health != null && other.health.IsDead) continue;
+
+            // If they’re already panicking, skip
+            if (other.herdPanicActive)
+                continue;
+
+            // Force them into herd flee
+            other.StateMachine.ChangeState(new AIFleeHerdState(other));
+        }
+    }
+
+    /// <summary>
+    /// Returns a flee direction possibly biased back towards spawn/home
+    /// when we are far from our spawn position. Uses hysteresis so it
+    /// only activates once we cross fleeHomeStartRadius, and turns off
+    /// once we are back inside fleeHomeStopRadius.
+    /// </summary>
+    public Vector3 AdjustFleeDirectionForHome(Vector3 fleeDir, Vector3 threatPosition)
+    {
+        // If this feature is off, or we have no spawn stored, just use normal flee.
+        if (!preferHomeWhenFleeing)
+            return fleeDir.normalized;
+
+        Vector3 pos = transform.position;
+        Vector3 home = spawnPosition;
+
+        pos.y = 0f;
+        home.y = 0f;
+        threatPosition.y = 0f;
+
+        float distFromHome = Vector3.Distance(pos, home);
+
+        // Turn bias ON when we get far from home
+        if (!fleeHomeBiasActive && distFromHome > fleeHomeStartRadius)
+        {
+            fleeHomeBiasActive = true;
+        }
+
+        // Turn bias OFF once we are safely back inside
+        if (fleeHomeBiasActive && distFromHome < fleeHomeStopRadius)
+        {
+            fleeHomeBiasActive = false;
+            return fleeDir.normalized;   // back to normal fleeing behaviour
+        }
+
+        // If bias is not active, just use normal flee direction
+        if (!fleeHomeBiasActive)
+            return fleeDir.normalized;
+
+        // --- Bias is active: steer more towards home while still respecting threat ---
+
+        Vector3 awayFromThreat = (pos - threatPosition);
+        if (awayFromThreat.sqrMagnitude < 0.0001f)
+            awayFromThreat = fleeDir;
+        awayFromThreat.y = 0f;
+        awayFromThreat.Normalize();
+
+        Vector3 toHome = (home - pos);
+        if (toHome.sqrMagnitude < 0.0001f)
+            return fleeDir.normalized;   // we're basically on top of home
+        toHome.y = 0f;
+        toHome.Normalize();
+
+        // Blend between away-from-threat and to-home.
+        // Since we're already "far", we can be fairly confident bending toward home.
+        // You can tune these weights if needed.
+        float homeWeight = 0.7f;   // stronger pull to home when bias is active
+        float threatWeight = 0.3f;
+
+        // If toHome is basically THROUGH the threat, dampen it a bit
+        float alignment = Vector3.Dot(toHome, awayFromThreat); // -1 opposite, +1 same
+        if (alignment < 0f)
+        {
+            // running straight "through" the threat to get home feels bad,
+            // so slightly reduce home influence in that situation.
+            homeWeight *= 0.5f;
+        }
+
+        Vector3 blended = (awayFromThreat * threatWeight + toHome * homeWeight);
+        blended.y = 0f;
+
+        if (blended.sqrMagnitude < 0.0001f)
+            return fleeDir.normalized;
+
+        return blended.normalized;
+    }
+
+
+
 
     public void UpdateLocomotionAnimationAuto()
     {
@@ -1804,24 +1978,23 @@ public class AIRestState : IState
 
 
         // ——— Player logic ———
-        if (ai.aiType == AIType.Passive || ai.aiType == AIType.PassiveEasy || ai.aiType == AIType.PassiveVeryEasy)
+        if (ai.aiType == AIType.Passive || ai.aiType == AIType.PassiveEasy || ai.aiType == AIType.PassiveVeryEasy || ai.aiType == AIType.PassiveHerd)
         {
             if (threatDistance <= ai.fleeRange)
             {
                 ai.agent.isStopped = false;
                 ai.StateMachine.ChangeState(
-                    ai.aiType == AIType.PassiveEasy
-                        ? new AIFleeSimpleState(ai)
-                        : ai.aiType == AIType.PassiveVeryEasy
-                            ? new AIFleeVeryEasyState(ai)
-                            : new AIFleeState(ai)
+                    ai.aiType == AIType.PassiveEasy ? new AIFleeSimpleState(ai) :
+                    ai.aiType == AIType.PassiveVeryEasy ? new AIFleeVeryEasyState(ai) :
+                    ai.aiType == AIType.PassiveHerd ? new AIFleeHerdState(ai) :
+                                                           new AIFleeState(ai)
                 );
                 return;
             }
         }
         // ——— Passive flee ——— (unchanged)
 
-// ——— Proactive aggressive families (Aggressive, T1, T3, T4) ———
+        // ——— Proactive aggressive families (Aggressive, T1, T3, T4) ———
         else if (isAggressiveNonT2)
         {
             if (ai.territorialAggressive && currentThreat != null && ai.IsOutsideAggressiveTerritory(currentThreat))
@@ -2129,19 +2302,14 @@ public class AIWanderState : IState
             threatDistance = ai.DistanceToPlayer();
         }
 
-        // ✅ Passive → flee if player too close
-        // ✅ Passive → flee if ANY fear source (player or companions) too close
-        if (ai.aiType == AIType.Passive || ai.aiType == AIType.PassiveEasy || ai.aiType == AIType.PassiveVeryEasy)
+        if (ai.aiType == AIType.Passive || ai.aiType == AIType.PassiveEasy || ai.aiType == AIType.PassiveVeryEasy || ai.aiType == AIType.PassiveHerd)
         {
             if (ai.TryGetNearestFearSource(ai.fleeRange, out _, out _))
             {
-                ai.StateMachine.ChangeState(
-                    ai.aiType == AIType.PassiveEasy
-                        ? new AIFleeSimpleState(ai)
-                        : ai.aiType == AIType.PassiveVeryEasy
-                            ? new AIFleeVeryEasyState(ai)
-                            : new AIFleeState(ai)
-                );
+                if (ai.aiType == AIType.PassiveEasy) ai.StateMachine.ChangeState(new AIFleeSimpleState(ai));
+                else if (ai.aiType == AIType.PassiveVeryEasy) ai.StateMachine.ChangeState(new AIFleeVeryEasyState(ai));
+                else if (ai.aiType == AIType.PassiveHerd) ai.StateMachine.ChangeState(new AIFleeHerdState(ai));
+                else ai.StateMachine.ChangeState(new AIFleeState(ai));
                 return;
             }
         }
@@ -2358,6 +2526,186 @@ public class AIWanderState : IState
 
     public void Exit() { }
 }
+
+public class AIFleeHerdState : IState
+{
+    private CuteAnimalAI ai;
+    private List<CuteAnimalAI> herd = new List<CuteAnimalAI>();
+    private float tightTimer;
+    private Vector3 scatterAnchor;    // where we start scattering from
+    private bool scattering;
+
+    private float repathTimer;
+    private const float RepathInterval = 0.25f;      // how often we update path
+    private const float DestThresholdSq = 0.5f * 0.5f; // min change needed to repath
+
+
+    // reuse local copies for clarity
+    private float cohW, sepW, safeFactor;
+
+    public AIFleeHerdState(CuteAnimalAI ai) { this.ai = ai; }
+
+    public void Enter()
+    {
+        ai.herdPanicActive = true;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+        ai.agent.autoBraking = false;
+        ai.agent.stoppingDistance = 0f;
+        ai.agent.speed = ai.fleeSpeed;
+
+        ai.AlertHerdOfThreat();
+
+        // cache weights to avoid repeated property lookups
+        cohW = ai.herdCohesionWeightWhileFleeing;
+        sepW = ai.herdSeparationWeightWhileFleeing;
+        safeFactor = Mathf.Max(1.1f, ai.herdSafeFactor);
+
+        // build herd: nearby same animalType & same AI type
+        herd.Clear();
+        int n = Physics.OverlapSphereNonAlloc(ai.transform.position, ai.herdJoinRadius, PerfBuffers.c64);
+        for (int i = 0; i < n; i++)
+        {
+            var col = PerfBuffers.c64[i];
+            if (!col) continue;
+            if (col.TryGetComponent<CuteAnimalAI>(out var other)
+                && other != ai
+                && other.aiType == CuteAnimalAI.AIType.PassiveHerd
+                && other.animalType == ai.animalType)
+            {
+                herd.Add(other);
+            }
+        }
+
+        // include self so cohesion math never divides by zero
+        if (!herd.Contains(ai)) herd.Add(ai);
+
+        tightTimer = ai.herdTightFleeSeconds;
+        scattering = false;
+        scatterAnchor = ai.transform.position;
+        repathTimer = 0f;
+    }
+
+    public void Update()
+    {
+        // SAFE CHECK (keep what you have)
+        if (!ai.TryGetNearestFearSource(ai.fleeRange * safeFactor, out Transform threat, out float fearDist))
+        {
+            BeginScatterIfNeeded();
+            return;
+        }
+
+        // =====================  FLEE-HERD CORE  =====================
+
+        // 1) Base flee direction away from threat (your existing helper or simple away vector)
+        Vector3 fleeDir = ai.ComputeSafeFleeDirectionFrom(threat); // or (ai.transform.position - threat.position).Flat().normalized;
+
+        // 2) Herd cohesion & separation
+        Vector3 centroid = Vector3.zero;
+        int aliveCount = 0;
+        Vector3 separation = Vector3.zero;
+
+        for (int i = 0; i < herd.Count; i++)
+        {
+            var h = herd[i];
+            if (!h || (h.health && h.health.IsDead)) continue;
+
+            centroid += h.transform.position;
+            aliveCount++;
+
+            if (h != ai)
+            {
+                Vector3 toMe = (ai.transform.position - h.transform.position);
+                float d = toMe.magnitude;
+                if (d > 0.001f && d < ai.herdPreferredDistance)
+                {
+                    separation += toMe.normalized * (ai.herdPreferredDistance - d);
+                }
+            }
+        }
+
+        if (aliveCount > 0)
+            centroid /= aliveCount;
+
+        Vector3 toCentroid = (centroid - ai.transform.position).Flat();
+        Vector3 herdCohesion = toCentroid.sqrMagnitude > 0.001f ? toCentroid.normalized * cohW : Vector3.zero;
+        Vector3 herdSeparation = separation.sqrMagnitude > 0.001f ? separation.normalized * sepW : Vector3.zero;
+
+        // 3) Blend all three
+        Vector3 blendedDir = (fleeDir + herdCohesion + herdSeparation);
+        blendedDir.y = 0f;
+
+        if (blendedDir.sqrMagnitude < 0.0001f)
+            blendedDir = fleeDir; // fallback
+
+        blendedDir.Normalize();
+
+        ai.RotateTowards(blendedDir);
+
+        // Only pick a new nav target at intervals and only if it’s meaningfully different
+        repathTimer -= Time.deltaTime;
+        if (repathTimer <= 0f)
+        {
+            float lookaheadDist = Mathf.Max(3f, ai.zigzagLookahead);
+            Vector3 candidate = ai.transform.position + blendedDir * lookaheadDist;
+            Vector3 safe = ai.SampleOnNavmesh(candidate, ai.fleeRange);
+
+            if (safe != Vector3.zero)
+            {
+                Vector3 currentDest = ai.agent.hasPath ? ai.agent.destination : ai.transform.position;
+                if ((safe - currentDest).sqrMagnitude > DestThresholdSq)
+                {
+                    ai.SetDestinationSmart(safe); // no forceNow, let nav handle it
+                }
+            }
+
+            repathTimer = RepathInterval;
+        }
+
+        // 4) TIGHT TIMER: after some time we’ll allow scattering when safe
+        if (tightTimer > 0f)
+            tightTimer -= Time.deltaTime;
+
+        if (fearDist > ai.fleeRange * safeFactor && tightTimer <= 0f)
+        {
+            BeginScatterIfNeeded();
+        }
+
+        // =====================  END FLEE-HERD CORE  =====================
+    }
+
+
+    private void BeginScatterIfNeeded()
+    {
+        if (!scattering)
+        {
+            scattering = true;
+            scatterAnchor = ai.transform.position;
+
+            // pick a personal scatter point around anchor and head there once
+            float r = Random.Range(ai.herdScatterRadius.x, ai.herdScatterRadius.y);
+            float ang = Random.Range(0f, 360f);
+            Vector3 offset = Quaternion.Euler(0f, ang, 0f) * (Vector3.forward * r);
+            Vector3 target = ai.SampleOnNavmesh(scatterAnchor + offset, r + 2f);
+            ai.SetDestinationSmart(target, forceNow: true);
+            ai.agent.speed = ai.herdRegroupSpeed; // downshift
+        }
+
+        // When we’ve arrived or close enough, hand control back to normal loop
+        if (!ai.agent.pathPending && ai.agent.remainingDistance <= 0.25f)
+        {
+            ai.StateMachine.ChangeState(new AIWanderState(ai));
+        }
+    }
+
+    public void Exit()
+    {
+        ai.fleeHomeBiasActive = false;
+        ai.herdPanicActive = false;
+        ai.agent.autoBraking = ai.enableAutoBraking;
+        ai.agent.stoppingDistance = ai.stopDistance;
+    }
+}
+
 
 // ================== CHASE STATE ==================
 public class AIChaseState : IState
@@ -2595,6 +2943,8 @@ public class AIFleeState : IState
         // Compute a flee direction away from the CURRENT fear source
         Vector3 fleeDir = ai.ComputeSafeFleeDirectionFrom(fear);
 
+        fleeDir = ai.AdjustFleeDirectionForHome(fleeDir, fear.position);
+
         Vector3 lateral = Vector3.Cross(Vector3.up, fleeDir).normalized;
         float lateralMeters = Mathf.Sin(Time.time * ai.zigzagSpeed) * ai.zigzagStrength;
         Vector3 lookahead = fleeDir * Mathf.Max(2f, ai.zigzagLookahead);
@@ -2721,14 +3071,12 @@ public class AIFleeState : IState
 
     public void Exit()
     {
+        ai.fleeHomeBiasActive = false;
         ai.agent.autoBraking = _prevAutoBraking;
         ai.agent.obstacleAvoidanceType = _prevAvoidance;
         ai.agent.avoidancePriority = _prevPriority;
         ai.agent.stoppingDistance = _prevStopDist;
     }
-
-
-
 
 }
 
