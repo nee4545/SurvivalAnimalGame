@@ -14,6 +14,9 @@ public class AnimalSpawnPoint : MonoBehaviour
         [Range(0f, 1f)] public float weight; // relative; doesn’t need to sum to 1
     }
 
+    [Header("Migration (optional)")]
+    public MigrationPath migrationPath;
+
     [Header("Prefabs for THIS point (habitat-specific)")]
     public List<WeightedPrefab> prefabs = new();
 
@@ -161,7 +164,22 @@ public class AnimalSpawnPoint : MonoBehaviour
         if (_parent && _parent.spawnParent) parentT = _parent.spawnParent;
 
         var go = PoolManager.Spawn(prefab, pos, rot, parentT);
-        if (go) _alive.Add(go);
+        if (go)
+        {
+            _alive.Add(go);
+
+            // Migration hookup (if prefab is MigratingAi and this point has a path)
+            var ai = go.GetComponent<CuteAnimalAI>();
+
+            if (ai && ai.aiType == CuteAnimalAI.AIType.MigratingAi && migrationPath)
+            {
+                ai.ConfigureMigration(this, migrationPath);
+
+                var herd = GetComponent<MigrationHerd>();
+                if (!herd) herd = gameObject.AddComponent<MigrationHerd>();
+                herd.Register(ai);
+            }
+        }
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────

@@ -51,7 +51,7 @@ public static class PerfBuffers
 [RequireComponent(typeof(NavMeshAgent))]
 public class CuteAnimalAI : MonoBehaviour
 {
-    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AggressiveType3, Companion , AggressiveJumping, AggressiveType4, PassiveHerd }
+    public enum AIType { Passive, PassiveEasy, PassiveVeryEasy, Aggressive, AggressiveType1, AggressiveType2, AggressiveType3, Companion , AggressiveJumping, AggressiveType4, PassiveHerd, MigratingAi }
     public enum AnimalType { Zebra, Giraffe, Lion, Elephant, Hyena, Chick, Chicken, Deer, Moose, Hippo, Rhino, Koala, Platypus, Cat, Dog, Panda, Bear, Crane, Peacock, Ostrich, Bunny, Squirrel, Bull, Tiger, Monkey, Gorlilla, Lizard, Flamingo, AntEater, Crocodile, Leapord, Meerkat, Boar, Buffalo }
 
     [Header("🧠 AI Behavior Type")]
@@ -205,6 +205,29 @@ public class CuteAnimalAI : MonoBehaviour
     [Tooltip("Cooldown before charge attempts reset.")]
     public float chargeCooldownDuration = 4f;
     public float chargeDetectionRange = 5f;
+
+
+    [Header("🦬 Migration")]
+    public MigrationPath migrationPath;
+    public AnimalSpawnPoint migrationOwner;
+
+    [Tooltip("How tightly the herd stays together (followers around leader).")]
+    public float migrationCohesionRadius = 6f;
+
+    [Tooltip("Spacing between animals in the herd.")]
+    public float migrationMinSeparation = 1.5f;
+
+    [Tooltip("Leader moves at this speed while migrating.")]
+    public float migrationMoveSpeed = 3.5f;
+
+    [Tooltip("Followers match leader, with a small lag.")]
+    public float migrationFollowerSpeed = 3.3f;
+
+    [Tooltip("When true, this animal ignores player aggression/damage triggers.")]
+    public bool isMigratingMoving;
+
+    [HideInInspector] public bool isMigrationLeader;
+    [HideInInspector] public int migrationNodeIndex;
 
     [Header("😤 Retaliation (AggressiveType2)")]
     [Tooltip("Delay to switch from flee to hunt after provoked.")]
@@ -546,6 +569,15 @@ public class CuteAnimalAI : MonoBehaviour
         return Vector3.Distance(transform.position, spawnPosition) <= homeRadius * 0.5f;
     }
 
+    public void ConfigureMigration(AnimalSpawnPoint owner, MigrationPath path)
+    {
+        migrationOwner = owner;
+        migrationPath = path;
+
+        var herd = migrationOwner ? migrationOwner.GetComponent<MigrationHerd>() : null;
+        StateMachine.ChangeState(new AIMigrateState(this, herd));
+    }
+
     /// <summary>
     /// Neutral behaviour: REST, but optionally force a trip home first.
     /// </summary>
@@ -558,6 +590,31 @@ public class CuteAnimalAI : MonoBehaviour
         else
         {
             StateMachine.ChangeState(new AIRestState(this));
+        }
+    }
+
+    public static void AdvanceLeaderNodeIndex(CuteAnimalAI ai)
+    {
+        int count = ai.migrationPath.Count;
+        if (count <= 0) return;
+
+        ai.migrationNodeIndex++;
+
+        if (ai.migrationNodeIndex >= count)
+        {
+            if (ai.migrationPath.pingPong)
+            {
+                // keep your current behaviour (loop); pingpong needs a direction flag to be real
+                ai.migrationNodeIndex = 0;
+            }
+            else if (ai.migrationPath.loop)
+            {
+                ai.migrationNodeIndex = 0;
+            }
+            else
+            {
+                ai.migrationNodeIndex = count - 1;
+            }
         }
     }
 
@@ -1066,6 +1123,12 @@ public class CuteAnimalAI : MonoBehaviour
 
         _pathCache = new NavMeshPath();
 
+        if (aiType == AIType.MigratingAi)
+        {
+            var herd = migrationOwner ? migrationOwner.GetComponent<MigrationHerd>() : null;
+            StateMachine.ChangeState(new AIMigrateState(this, herd));
+        }
+
 
         lodNearSq = lodNear * lodNear;
         lodMidSq = lodMid * lodMid;
@@ -1155,6 +1218,10 @@ public class CuteAnimalAI : MonoBehaviour
         // Only care if we were hit
         if (victim != this.transform) return;
         if (!attacker || !IsValidTarget(attacker)) return;
+
+        if (aiType == AIType.MigratingAi && isMigratingMoving)
+            return;
+
 
         // Remember who hit us
         RememberAttacker(attacker);
@@ -2653,6 +2720,189 @@ public class AIWanderState : IState
 
     public void Exit() { }
 }
+
+public class AIMigrateState : IState
+{
+    private readonly CuteAnimalAI ai;
+    private readonly MigrationHerd herd;
+    private float _slotUpdateT;
+
+    public AIMigrateState(CuteAnimalAI ai, MigrationHerd herd)
+    {
+        this.ai = ai;
+        this.herd = herd;
+    }
+
+    public void Enter()
+    {
+        ai.isMigratingMoving = true;
+        ai.agent.isStopped = false;
+
+        ai.agent.speed = ai.isMigrationLeader ? ai.migrationMoveSpeed : ai.migrationFollowerSpeed;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+    }
+
+    public void Update()
+    {
+        if (!ai.migrationPath || ai.migrationPath.Count == 0)
+        {
+            ai.ChangeStateToWander(); // fallback
+            return;
+        }
+
+
+
+        // Leader goes to next node; followers go to their slot near leader
+        if (ai.isMigrationLeader)
+        {
+            if (ai.migrationPath.TryGetNode(ai.migrationNodeIndex, out var node))
+            {
+                // Only set destination if it changed meaningfully (prevents constant replans + slowdown)
+                if (Vector3.Distance(ai.agent.destination, node.point.position) > 0.75f)
+                    ai.SetDestinationSmart(node.point.position, forceNow: true);
+
+                bool reached =
+                    !ai.agent.pathPending &&
+                    ai.agent.remainingDistance <= Mathf.Max(ai.agent.stoppingDistance, 0.35f);
+
+                if (reached)
+                {
+                    // ✅ If rest is 0 → advance immediately and keep migrating (no idle frame)
+                    if (node.restSeconds <= 0.01f)
+                    {
+                        AdvanceLeaderNodeIndex(ai);          // add helper below
+                        return;                              // next Update will target next node
+                    }
+
+                    ai.StateMachine.ChangeState(new AIMigrateRestState(ai, herd, node.restSeconds));
+                }
+            }
+        }
+
+        if(!ai.isMigrationLeader)
+        {
+            var leader = herd ? herd.Leader : null;
+            if (!leader) { ai.isMigrationLeader = true; return; }
+
+            _slotUpdateT -= Time.deltaTime;
+            if (_slotUpdateT <= 0f)
+            {
+                _slotUpdateT = 0.15f; // 6-7 updates/sec (tweak 0.1–0.25)
+
+                Vector3 slot = herd.GetFollowerSlot(ai);
+
+                // Only re-path if the slot moved meaningfully
+                if (Vector3.Distance(ai.agent.destination, slot) > 0.75f)
+                    ai.SetDestinationSmart(slot, forceNow: true);
+            }
+
+            // speed tuning: if too far behind, catch up slightly
+            float d = Vector3.Distance(ai.transform.position, leader.transform.position);
+            ai.agent.speed = (d > ai.migrationCohesionRadius * 1.25f)
+                ? ai.migrationFollowerSpeed * 1.15f
+                : ai.migrationFollowerSpeed;
+
+            return;
+        }
+    }
+
+    public void Exit()
+    {
+        ai.isMigratingMoving = false;
+    }
+}
+
+
+public class AIMigrateRestState : IState
+{
+    private readonly CuteAnimalAI ai;
+    private readonly MigrationHerd herd;
+
+    private float restSeconds;
+    private float endTime;
+
+    public AIMigrateRestState(CuteAnimalAI ai, MigrationHerd herd, float restSeconds)
+    {
+        this.ai = ai;
+        this.herd = herd;
+        this.restSeconds = restSeconds;
+    }
+
+    public void Enter()
+    {
+        ai.isMigratingMoving = false;
+
+        // If rest is basically zero, don’t stop at all.
+        if (restSeconds <= 0.01f)
+        {
+            if (ai.isMigrationLeader)
+                AdvanceNode();
+
+            ai.StateMachine.ChangeState(new AIMigrateState(ai, herd));
+            return;
+        }
+
+        ai.agent.isStopped = true;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
+
+        // ✅ Real-time end (not affected by Time.timeScale)
+        endTime = Time.unscaledTime + restSeconds;
+
+        // Optional debug
+        // Debug.Log($"[{ai.name}] REST enter node={ai.migrationNodeIndex}, rest={restSeconds}, timeScale={Time.timeScale}");
+    }
+
+    public void Update()
+    {
+        // During rest: if player in detection range → attack
+        if (ai.player)
+        {
+            float d = Vector3.Distance(ai.transform.position, ai.player.position);
+            if (d <= ai.detectionRange)
+            {
+                ai.agent.isStopped = false;
+                ai.StateMachine.ChangeState(new AIAttackState(ai));
+                return;
+            }
+        }
+
+        // ✅ Real-time check
+        if (Time.unscaledTime >= endTime)
+        {
+            if (ai.isMigrationLeader)
+                AdvanceNode();
+
+            ai.agent.isStopped = false;
+            ai.StateMachine.ChangeState(new AIMigrateState(ai, herd));
+        }
+    }
+
+    void AdvanceNode()
+    {
+        int count = ai.migrationPath.Count;
+        if (count <= 0) return;
+
+        ai.migrationNodeIndex++;
+
+        if (ai.migrationNodeIndex >= count)
+        {
+            if (ai.migrationPath.pingPong)
+                ai.migrationNodeIndex = 0; // (real pingpong needs a direction flag)
+            else if (ai.migrationPath.loop)
+                ai.migrationNodeIndex = 0;
+            else
+                ai.migrationNodeIndex = count - 1;
+        }
+    }
+
+    public void Exit()
+    {
+        ai.agent.isStopped = false;
+    }
+}
+
+
+
 
 public class AIFleeHerdState : IState
 {
