@@ -30,6 +30,12 @@ namespace Terresquall
         public enum InputMode { oldInputManager, newInputSystem };
         public static InputMode inputMode;
 
+        [Header("Default Position")]
+        [Tooltip("How far below the vertical center of the screen (in pixels) the joystick should sit.")]
+        public float defaultYOffset = 250f;   // tweak as you like
+
+        private Vector3 defaultRootPosition;
+
         public static InputMode GetInputMode()
         {
 #if ENABLE_INPUT_SYSTEM
@@ -108,6 +114,53 @@ namespace Terresquall
                 boundaries.y = transform.position.y - (boundaries.height / 2f);
             }
         }
+
+
+        /// <summary>
+        /// Computes and sets the default root position based on screen centre + Y offset.
+        /// </summary>
+        void UpdateDefaultRootPosition()
+        {
+            if (rootCanvas == null)
+                rootCanvas = GetRootCanvas();
+
+            // Screen centre, then move down by defaultYOffset
+            Vector2 screenPos = new Vector2(
+                Screen.width * 0.5f,
+                Screen.height * 0.5f - defaultYOffset
+            );
+
+            Vector3 worldPos;
+
+            if (rootCanvas != null && rootCanvas.renderMode == RenderMode.ScreenSpaceOverlay)
+            {
+                worldPos = screenPos;
+            }
+            else if (rootCanvas != null)
+            {
+                Vector3 wp;
+                if (RectTransformUtility.ScreenPointToWorldPointInRectangle(
+                    rootCanvas.transform as RectTransform,
+                    screenPos,
+                    rootCanvas.worldCamera,
+                    out wp
+                ))
+                {
+                    worldPos = wp;
+                }
+                else
+                {
+                    worldPos = screenPos;
+                }
+            }
+            else
+            {
+                worldPos = screenPos;
+            }
+
+            defaultRootPosition = worldPos;
+        }
+
 
         // Get an existing instance of a joystick.
         public static VirtualJoystick GetInstance(int id = 0)
@@ -257,7 +310,16 @@ namespace Terresquall
 
         public void OnPointerUp(PointerEventData data)
         {
+            transform.position = defaultRootPosition;
+
+            // Reset origin / desired position so the stick is centred on the joystick
+            origin = transform.position;
             desiredPosition = transform.position;
+
+            // Also move the control stick immediately so it doesn't lerp from the old drag position
+            if (controlStick != null)
+                controlStick.transform.position = transform.position;
+
             controlStick.color = originalColor;
             currentPointerId = -2;
         }
@@ -371,6 +433,10 @@ namespace Terresquall
                 Debug.LogError($"Your Virtual Joystick \"{name})\" is not attached to a Canvas, so it won't work. It has been disabled.", gameObject);
                 enabled = false;
             }
+
+            UpdateDefaultRootPosition();
+            transform.position = defaultRootPosition;
+
 
             origin = desiredPosition = transform.position;
             StartCoroutine(Activate());

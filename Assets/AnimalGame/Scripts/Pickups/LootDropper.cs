@@ -13,17 +13,17 @@ public class LootDropper : MonoBehaviour, IPoolable
 
     [Header("Drop Behavior")]
     public float spawnHeight = 1.2f;        // start loot ABOVE the body
-    public float scatterRadius = 1.4f;      // how far around the body loot can land
     private float arcHeightMin = 0.8f;
     private float arcHeightMax = 2f;
     public float arcDurationMin = 0.35f;
     public float arcDurationMax = 0.55f;
+    public float scatterRadius = 1.4f;      // how far around the body loot can land
 
     [Tooltip("Extra delay AFTER landing before pickup is allowed")]
     private float pickupDelay = 0.7f;
 
+    private LayerMask groundMask;
     [Header("Grounding")]
-    public LayerMask groundMask = ~0;
     public float groundCheckDistance = 10f;
 
     [Header("Lifetime")]
@@ -37,7 +37,11 @@ public class LootDropper : MonoBehaviour, IPoolable
 
     private bool hasDropped = false;
 
-    public void Awake() => hasDropped = false;
+    public void Awake()
+    {
+        hasDropped = false;
+        groundMask = LayerMask.GetMask("Terrain");
+    }
     public void OnSpawned() => hasDropped = false;
     public void OnDespawned() { }
 

@@ -61,6 +61,13 @@ public class CuteAnimalAI : MonoBehaviour
     [Tooltip("Species for grouping or flocking behavior.")]
     public AnimalType animalType = AnimalType.Zebra;
 
+    [Header("🏡 Home Area")]
+    [Tooltip("Home radius around spawn.")]
+    public float homeRadius = 8f;
+
+    [Tooltip("If true, this animal must return to its spawn position before resting / idling.")]
+    private bool forceReturnHome = true;
+
     [Tooltip("Enable flocking (alignment, cohesion, separation) with same-type neighbors.")]
     public bool enableFlocking = false;
 
@@ -182,10 +189,6 @@ public class CuteAnimalAI : MonoBehaviour
     [Tooltip("Speed when regrouping.")]
     public float herdRegroupSpeed = 3f;
 
-    [Header("🏡 Home Area")]
-    [Tooltip("Home radius around spawn.")]
-    public float homeRadius = 8f;
-
     [Header("🐗 Charge (AggressiveType1)")]
     [Tooltip("Windup duration before charge.")]
     public float windupDuration = 1.5f;
@@ -287,6 +290,18 @@ public class CuteAnimalAI : MonoBehaviour
     public float flockCohesionWeight = 1f;
     [Tooltip("Alignment weight (match direction).")]
     public float flockAlignmentWeight = 1f;
+
+    [Header("🐏 Charge Knockback (Player)")]
+    [Tooltip("Horizontal distance the player is pushed back on a charge hit.")]
+    public float playerKnockbackDistance = 10f;
+
+    [Tooltip("Peak height of the player's knockback arc.")]
+    public float playerKnockbackHeight = 5f;
+
+    [Tooltip("Duration of the knockback arc (seconds).")]
+    public float playerKnockbackDuration = 0.4f;
+
+    private Coroutine _playerKnockbackCo;
 
     [Header("🔍 Companion Targeting")]
     [Tooltip("Tag used to identify other AI to chase/attack")]
@@ -522,6 +537,45 @@ public class CuteAnimalAI : MonoBehaviour
     }
 
 
+    /// <summary>
+    /// Are we considered 'at home'?
+    /// Uses the same threshold as AIReturnToBaseState (homeRadius * 0.5f).
+    /// </summary>
+    public bool IsAtHome()
+    {
+        return Vector3.Distance(transform.position, spawnPosition) <= homeRadius * 0.5f;
+    }
+
+    /// <summary>
+    /// Neutral behaviour: REST, but optionally force a trip home first.
+    /// </summary>
+    public void ChangeStateToRest()
+    {
+        if (forceReturnHome && !IsAtHome())
+        {
+            StateMachine.ChangeState(new AIReturnToBaseState(this));
+        }
+        else
+        {
+            StateMachine.ChangeState(new AIRestState(this));
+        }
+    }
+
+    /// <summary>
+    /// Neutral behaviour: WANDER, but optionally force a trip home first.
+    /// </summary>
+    public void ChangeStateToWander()
+    {
+        if (forceReturnHome && !IsAtHome())
+        {
+            StateMachine.ChangeState(new AIReturnToBaseState(this));
+        }
+        else
+        {
+            StateMachine.ChangeState(new AIWanderState(this));
+        }
+    }
+
     private bool InAttackOrDead()
     {
         if (StateMachine == null) return false;
@@ -637,7 +691,53 @@ public class CuteAnimalAI : MonoBehaviour
         return blended.normalized;
     }
 
+    /// <summary>
+    /// Starts a parabolic knockback on the player in the given horizontal direction.
+    /// </summary>
+    public void StartPlayerKnockback(Vector3 direction)
+    {
+        if (!player) return;
 
+        direction.y = 0f;
+        if (direction.sqrMagnitude < 0.0001f)
+            direction = -player.forward.Flat(); // fallback
+
+        direction.Normalize();
+
+        if (_playerKnockbackCo != null)
+            StopCoroutine(_playerKnockbackCo);
+
+        _playerKnockbackCo = StartCoroutine(PlayerKnockbackParabola(player, direction,
+            playerKnockbackDistance, playerKnockbackHeight, playerKnockbackDuration));
+    }
+
+    private IEnumerator PlayerKnockbackParabola(Transform target, Vector3 dir, float distance, float height, float duration)
+    {
+        if (!target) yield break;
+
+        Vector3 start = target.position;
+        Vector3 end = start + dir * distance;
+
+        float elapsed = 0f;
+        while (elapsed < duration)
+        {
+            float t = Mathf.Clamp01(elapsed / duration);
+
+            // Horizontal lerp
+            Vector3 pos = Vector3.Lerp(start, end, t);
+
+            // Parabolic vertical offset
+            pos.y = Mathf.Lerp(start.y, end.y, t) + height * Mathf.Sin(Mathf.PI * t);
+
+            target.position = pos;
+
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
+
+        target.position = end;
+        _playerKnockbackCo = null;
+    }
 
 
     public void UpdateLocomotionAnimationAuto()
@@ -1082,8 +1182,20 @@ public class CuteAnimalAI : MonoBehaviour
                     StateMachine.ChangeState(new AIFleeThenHuntState(this));
                 break;
 
-            case AIType.Aggressive:
             case AIType.AggressiveType1:
+                {
+                    // If we’re in an unstoppable charge, don’t change state – just let the charge finish.
+                    if (StateMachine.CurrentState is AIChargeState)
+                        break;
+
+                    float dis = Vector3.Distance(transform.position, attacker.position);
+                    if (dis <= attackRange)
+                        StateMachine.ChangeState(new AIAttackState(this, attacker));
+                    else
+                        StateMachine.ChangeState(new AIChaseState(this, attacker));
+                    break;
+                }
+            case AIType.Aggressive:
             case AIType.AggressiveType3:
             case AIType.AggressiveJumping:
                 // Snap focus to the attacker
@@ -1231,7 +1343,7 @@ public class CuteAnimalAI : MonoBehaviour
         else if (aiType == AIType.AggressiveJumping)
             StateMachine.ChangeState(new AIPerchRestState(this));  // perched until triggered
         else
-            StateMachine.ChangeState(new AIWanderState(this));
+            ChangeStateToWander();
     }
 
     private void ResetRuntimeForSpawn()
@@ -1778,8 +1890,25 @@ public class CuteAnimalAI : MonoBehaviour
 
         if (aiType == AIType.AggressiveType1)
         {
-            // immediately interrupt whatever we were doing and start re-charging
-            StateMachine.ChangeState(new AIWindupState(this));
+            if (StateMachine.CurrentState is AIReturnToBaseState)
+            {
+                // "Only attack if he attacks" is already true here because ApplyKnockback
+                // is only called when we just took a hit.
+                if (PlayerInRange(attackRange))
+                {
+                    StateMachine.ChangeState(new AIAttackState(this));
+                }
+                // If not in melee range, do nothing special – keep going home.
+            }
+            //else
+            //{
+            //    // In all other states, we can still restart a charge if we're not on cooldown
+            //    // and we still have attempts left.
+            //    if (!isChargeCooldownActive && currentChargeAttempts < maxChargeAttempts)
+            //    {
+            //        StateMachine.ChangeState(new AIWindupState(this));
+            //    }
+            //}
         }
 
         if (_renderers != null)
@@ -1938,9 +2067,7 @@ public class AIRestState : IState
 
         bool isAggressiveNonT2 =
             ai.aiType == AIType.Aggressive ||
-            ai.aiType == AIType.AggressiveType1 ||
-            ai.aiType == AIType.AggressiveType3 ||
-            ai.aiType == AIType.AggressiveType4;
+            ai.aiType == AIType.AggressiveType3;
 
         if (isAggressiveNonT2)
         {
@@ -2094,7 +2221,7 @@ public class AIRestState : IState
         if (restTimer <= 0f)
         {
             ai.agent.isStopped = false;
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
         }
     }
 
@@ -2179,7 +2306,7 @@ public class AIChaseType4State : IState
     {
         if (!ai.player)
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
             return;
         }
 
@@ -2187,7 +2314,7 @@ public class AIChaseType4State : IState
 
         if (distanceToPlayer > ai.detectionRange)
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
             return;
         }
 
@@ -2430,7 +2557,7 @@ public class AIWanderState : IState
         // ✅ Already in home area → REST
         if (distToSpawn <= ai.homeRadius * 0.8f)
         {
-            ai.StateMachine.ChangeState(new AIRestState(ai));
+            ai.ChangeStateToRest();
             return;
         }
 
@@ -2693,7 +2820,7 @@ public class AIFleeHerdState : IState
         // When we’ve arrived or close enough, hand control back to normal loop
         if (!ai.agent.pathPending && ai.agent.remainingDistance <= 0.25f)
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
         }
     }
 
@@ -2762,10 +2889,10 @@ public class AIChaseState : IState
             return;
         }
 
-        if (!chaseTarget) { ai.StateMachine.ChangeState(new AIWanderState(ai)); return; }
+        if (!chaseTarget) { ai.ChangeStateToWander(); return; }
 
         float dist = Vector3.Distance(ai.transform.position, chaseTarget.position);
-        if (dist > ai.detectionRange * 1.5f) { ai.StateMachine.ChangeState(new AIWanderState(ai)); return; }
+        if (dist > ai.detectionRange * 1.5f) { ai.ChangeStateToWander(); return; }
         if (dist <= ai.attackRange) { ai.StateMachine.ChangeState(new AIAttackState(ai, chaseTarget)); return; }
 
         ai.SetDestinationSmart(chaseTarget.position);
@@ -2846,7 +2973,7 @@ public class AIAttackState : IState
         timer -= Time.deltaTime;
         if (timer <= 0f)
         {
-            if (!attackTarget) { ai.StateMachine.ChangeState(new AIWanderState(ai)); return; }
+            if (!attackTarget) { ai.ChangeStateToWander(); return; }
 
             float d = Vector3.Distance(ai.transform.position, attackTarget.position);
             if (d <= ai.attackRange)
@@ -2867,7 +2994,7 @@ public class AIAttackState : IState
             }
             else
             {
-                ai.StateMachine.ChangeState(new AIWanderState(ai));
+                ai.ChangeStateToWander();
             }
         }
     }
@@ -2922,7 +3049,7 @@ public class AIFleeState : IState
         // Find current nearest threat (player or companion) in an expanded radius
         if (!ai.TryGetNearestFearSource(ai.fleeRange * 3f, out Transform fear, out float fearDist))
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
             return;
         }
 
@@ -2936,7 +3063,7 @@ public class AIFleeState : IState
         // If we've opened a healthy gap from ALL threats, calm down
         if (fearDist > ai.fleeRange * 2.5f)
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
             return;
         }
 
@@ -3107,7 +3234,7 @@ public class AIKnockbackState : IState
 
         if (timer <= 0f)
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
         }
     }
 
@@ -3153,7 +3280,7 @@ public class AIWindupState : IState
     {
         if (ai.player == null)
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
             return;
         }
 
@@ -3186,9 +3313,10 @@ public class AIChargeState : IState
 
     public void Enter()
     {
-        // 1) Increase attempt count & set up agent
+        // 1) Count attempt
         ai.currentChargeAttempts++;
 
+        // If we’ve just used the last attempt, arm cooldown.
         if (ai.currentChargeAttempts >= ai.maxChargeAttempts)
         {
             ai.isChargeCooldownActive = true;
@@ -3198,37 +3326,43 @@ public class AIChargeState : IState
         ai.agent.speed = ai.chargeSpeed;
         ai.agent.ResetPath();
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
-        ai.agent.updateRotation = false;  // we'll rotate ourselves
+
+        // We control rotation manually during the charge, not the NavMeshAgent
+        ai.agent.updateRotation = false;
 
         timer = ai.chargeDuration;
         hasHitPlayer = false;
 
-        // 2) Compute a one‐time direction & overshoot point
+        // 2) Lock direction & overshoot point ONCE
         if (ai.player != null)
         {
             chargeDirection = (ai.player.position - ai.transform.position)
-                                .Flat()                   // extension method to zero Y
+                                .Flat()
                                 .normalized;
-            // target a point just past the player's current pos:
+
             overshootPoint = ai.player.position + chargeDirection * overshootDistance;
         }
         else
         {
-            chargeDirection = ai.transform.forward;
+            chargeDirection = ai.transform.forward.Flat().normalized;
             overshootPoint = ai.transform.position + chargeDirection * overshootDistance;
         }
 
+        if (chargeDirection.sqrMagnitude < 0.0001f)
+            chargeDirection = ai.transform.forward.Flat().normalized;
+
+        // Face locked direction
         ai.transform.rotation = Quaternion.LookRotation(chargeDirection);
 
-        // 3) Tell the NavMeshAgent to run full‐speed toward that overshoot point
         ai.agent.stoppingDistance = 0f;
-        ai.SetDestinationSmart(overshootPoint);
+        ai.SetDestinationSmart(overshootPoint, forceNow: true);
     }
 
     public void Update()
     {
         timer -= Time.deltaTime;
 
+        // Keep rotation locked to the original charge direction
         Quaternion targetRot = Quaternion.LookRotation(chargeDirection);
         ai.transform.rotation = Quaternion.RotateTowards(
             ai.transform.rotation,
@@ -3236,7 +3370,7 @@ public class AIChargeState : IState
             ai.companionRotationLerp * Time.deltaTime
         );
 
-        // 2) Collision check on the way through
+        // 2) Collision with player during the charge
         if (!hasHitPlayer && ai.player != null)
         {
             float distToPlayer = Vector3.Distance(ai.transform.position, ai.player.position);
@@ -3245,38 +3379,34 @@ public class AIChargeState : IState
                 if (ai.player.TryGetComponent<Health>(out var hp))
                     hp.TakeDamage(ai.chargeDamage);
 
+                // Knock the player back on a parabolic arc
+                Vector3 knockDir = (ai.player.position - ai.transform.position).Flat().normalized;
+                ai.StartPlayerKnockback(knockDir);
+
                 hasHitPlayer = true;
 
-                // 🔒 Immediately arm cooldown so we won't wind up again until we go home & recover
-                ai.isChargeCooldownActive = true;
-                ai.chargeCooldownTimer = ai.chargeCooldownDuration;
+                // We still keep charging visually; cooldown is already armed in Enter()
             }
         }
 
-        // 3) Termination: timed out, reached overshoot, or hit the player
+        // 3) Termination: only based on time or overshoot, NOT on hasHitPlayer
         bool reachedOvershoot = !ai.agent.pathPending && ai.agent.remainingDistance <= 0.1f;
 
-        if (timer <= 0f || reachedOvershoot || hasHitPlayer)
+        if (timer <= 0f || reachedOvershoot)
         {
-            // ✅ If we successfully hit, always go home to reset before another charge
-            if (hasHitPlayer)
-            {
-                ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
-                return;
-            }
-
             bool haveAttemptsLeft = ai.currentChargeAttempts < ai.maxChargeAttempts;
-            bool playerClose = ai.player && Vector3.Distance(ai.transform.position, ai.player.position) <= ai.chargeDetectionRange;
+            bool playerClose = ai.player &&
+                               Vector3.Distance(ai.transform.position, ai.player.position) <= ai.chargeDetectionRange;
 
+            // If we still have attempts and player is close, chain into another windup
             if (!ai.isChargeCooldownActive && haveAttemptsLeft && playerClose)
             {
                 ai.StateMachine.ChangeState(new AIWindupState(ai));
                 return;
             }
 
-            // Otherwise, go home (will cool down if we hit the cap)
+            // Otherwise always go home after a completed charge
             ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
-            return;
         }
     }
 
@@ -3285,6 +3415,7 @@ public class AIChargeState : IState
         ai.agent.updateRotation = true;
     }
 }
+
 
 public static class Vector3Extensions
 {
@@ -3308,14 +3439,14 @@ public class AIFleeSimpleState : IState
     {
         if (ai.player == null)
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
             return;
         }
 
         float distanceToPlayer = ai.DistanceToPlayer();
         if (distanceToPlayer > ai.fleeRange * 2f)
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
             return;
         }
 
@@ -3361,14 +3492,14 @@ public class AIFleeVeryEasyState : IState
     {
         if (ai.player == null)
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
             return;
         }
 
         float distanceToPlayer = ai.DistanceToPlayer();
         if (distanceToPlayer > ai.fleeRange * 2.5f)
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
             return;
         }
 
@@ -3478,56 +3609,168 @@ public class AIReturnToBaseState : IState
         if (restTimer <= 0f)
         {
             ai.agent.isStopped = false;
-            ai.StateMachine.ChangeState(new AIRestState(ai));
+            ai.ChangeStateToRest();
         }
     }
 
     private void TryInterruptForCombat()
     {
-        if (!ai.player) return;
-
-        float dist = ai.DistanceToPlayer();
-
-        // Plain Aggressive with territorial leash: only re-engage if player is INSIDE territory
-        if (ai.aiType == CuteAnimalAI.AIType.Aggressive)
+        // 1) Passive families – if something scary is close, stop going home and flee.
+        if (ai.aiType == AIType.Passive ||
+            ai.aiType == AIType.PassiveEasy ||
+            ai.aiType == AIType.PassiveVeryEasy ||
+            ai.aiType == AIType.PassiveHerd)
         {
-            if (ai.territorialAggressive && ai.IsOutsideAggressiveTerritory())
-                return; // stay on course home
+            if (ai.TryGetNearestFearSource(ai.fleeRange, out _, out _))
+            {
+                ai.agent.isStopped = false;
 
-            // Inside leash (or leash off) – normal engage rules
+                if (ai.aiType == AIType.PassiveEasy)
+                    ai.StateMachine.ChangeState(new AIFleeSimpleState(ai));
+                else if (ai.aiType == AIType.PassiveVeryEasy)
+                    ai.StateMachine.ChangeState(new AIFleeVeryEasyState(ai));
+                else if (ai.aiType == AIType.PassiveHerd)
+                    ai.StateMachine.ChangeState(new AIFleeHerdState(ai));
+                else
+                    ai.StateMachine.ChangeState(new AIFleeState(ai));
+
+                return;
+            }
+
+            // Nothing scary → keep going home.
+            return;
+        }
+
+        // For the rest we may use player + combat threats.
+        Transform threat = null;
+        float dist = Mathf.Infinity;
+
+        // 2) Core aggressive families (including jumping).
+        bool isAggressiveCore =
+            ai.aiType == AIType.Aggressive ||
+            ai.aiType == AIType.AggressiveType3 ||
+            ai.aiType == AIType.AggressiveType4 ||
+            ai.aiType == AIType.AggressiveJumping;
+
+        if (isAggressiveCore)
+        {
+            // This prefers player, then companions.
+            threat = ai.GetClosestThreatForCombat();
+            if (!threat)
+                return;
+
+            dist = Vector3.Distance(ai.transform.position, threat.position);
+
+            // Territorial leash for plain Aggressive.
+            if (ai.aiType == AIType.Aggressive &&
+                ai.territorialAggressive &&
+                ai.IsOutsideAggressiveTerritory(threat))
+            {
+                // Threat is outside leash – ignore and keep returning home.
+                return;
+            }
+
+            // Melee first.
             if (dist <= ai.attackRange)
             {
+                ai.agent.isStopped = false;
+                ai.StateMachine.ChangeState(new AIAttackState(ai, threat));
+                return;
+            }
+
+            // Pack-hunting wolves – start pack call instead of solo chase.
+            if (ai.aiType == AIType.AggressiveType3 &&
+                dist <= ai.detectionRange)
+            {
+                ai.agent.isStopped = false;
+                ai.StateMachine.ChangeState(new AIPackCallState(ai));
+                return;
+            }
+
+            // Generic chase / Type4 predictive chase.
+            if (dist <= ai.detectionRange)
+            {
+                ai.agent.isStopped = false;
+                if (ai.aiType == AIType.AggressiveType4)
+                    ai.StateMachine.ChangeState(new AIChaseType4State(ai));
+                else
+                    ai.StateMachine.ChangeState(new AIChaseState(ai, threat));
+                return;
+            }
+
+            return;
+        }
+
+        // 3) Charger (AggressiveType1) – can still react while returning home.
+        if (ai.aiType == AIType.AggressiveType1)
+        {
+            if (!ai.player)
+                return;
+
+            dist = ai.DistanceToPlayer();
+
+            // If on cooldown, this type explicitly should *not* re-engage.
+            if (ai.isChargeCooldownActive)
+                return;
+
+            // If very close, allow a melee bite.
+            if (dist <= ai.attackRange)
+            {
+                ai.agent.isStopped = false;
                 ai.StateMachine.ChangeState(new AIAttackState(ai));
                 return;
             }
-            if (dist <= ai.detectionRange)
-            {
-                ai.StateMachine.ChangeState(new AIChaseState(ai));
-                return;
-            }
+
+            //// If player enters charge detection cone and we still have attempts, restart charge loop.
+            //if (dist <= ai.chargeDetectionRange &&
+            //    ai.currentChargeAttempts < ai.maxChargeAttempts)
+            //{
+            //    ai.agent.isStopped = false;
+            //    ai.StateMachine.ChangeState(new AIWindupState(ai));
+            //    return;
+            //}
+
+            return;
         }
 
-        // AggressiveType2/others that “re-engage when provoked”
-        if (ai.aiType == CuteAnimalAI.AIType.AggressiveType2 && ai.wasProvoked)
+        // 4) Retaliator (AggressiveType2) – only hunts if provoked.
+        if (ai.aiType == AIType.AggressiveType2 && ai.wasProvoked)
         {
-            // If you also made Type2 territorial, gate it similarly:
-            if (ai.territorial && ai.IsPlayerOutsideTerritory())
+            Transform t =
+                ai.retaliationTarget ? ai.retaliationTarget :
+                ai.lastAttacker ? ai.lastAttacker :
+                ai.player;
+
+            if (!t)
+                return;
+
+            dist = Vector3.Distance(ai.transform.position, t.position);
+
+            // Territorial leash for Type2.
+            if (ai.territorial && ai.IsTransformOutsideTerritory(t))
                 return;
 
             if (dist <= ai.attackRange)
             {
-                ai.StateMachine.ChangeState(new AIAttackState(ai));
+                ai.agent.isStopped = false;
+                ai.StateMachine.ChangeState(new AIAttackState(ai, t));
                 return;
             }
+
             if (dist <= ai.detectionRange)
             {
-                ai.StateMachine.ChangeState(new AIChaseState(ai));
+                ai.agent.isStopped = false;
+                ai.StateMachine.ChangeState(new AIChaseState(ai, t));
                 return;
             }
+
+            return;
         }
 
-        // Add similar blocks for other AI types if you want them to interrupt the “go home” too.
+        // 5) Other types (Companion etc.) – no special behaviour while returning home for now.
     }
+
+
 
     public void Exit()
     {
@@ -3630,7 +3873,7 @@ public class AICompanionState : IState
     {
         if (ai.player == null)
         {
-            ai.StateMachine.ChangeState(new AIWanderState(ai));
+            ai.ChangeStateToWander();
             return;
         }
 

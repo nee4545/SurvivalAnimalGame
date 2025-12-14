@@ -23,29 +23,233 @@ public enum CuteAnimControllerType
     SnakeBool     // snake controller: isIdle / isWalking / isAttacking / isDead
 }
 
+[System.Serializable]
+public class AnimationBoolSet
+{
+    [Tooltip("List of bool parameter names on the Animator for this category. One will be randomly chosen.")]
+    public string[] parameterNames;
+}
 
 public class CuteAnimalAnimHandler : MonoBehaviour
 {
     public Animator animator;
 
-    [Header("Controller Type (hack for spider/snake)")]
+    [Header("Controller Type (for old animals)")]
     public CuteAnimControllerType controllerType = CuteAnimControllerType.GenericInt;
+
+    [Header("PolyPerfect Pack")]
+    [Tooltip("Enable this for animals using the new PolyPerfect-style Animator (bool parameters).")]
+    public bool isPolyPerfectAnimal = false;
+
+    [Tooltip("Idle / stand / look-around variants.")]
+    public AnimationBoolSet polyIdleSet;
+
+    [Tooltip("Walk / slow locomotion variants.")]
+    public AnimationBoolSet polyWalkSet;
+
+    [Tooltip("Run / fast locomotion variants.")]
+    public AnimationBoolSet polyRunSet;
+
+    [Tooltip("Attack / bite / lunge variants.")]
+    public AnimationBoolSet polyAttackSet;
+
+    [Tooltip("Death / fall variants.")]
+    public AnimationBoolSet polyDeathSet;
+
+    [Tooltip("Rest / sleep variants.")]
+    public AnimationBoolSet polyRestSet;
+
+    [Tooltip("Eat / graze / drink variants.")]
+    public AnimationBoolSet polyEatSet;
+
+    // Cached bool parameter names for PolyPerfect-style controllers
+    private HashSet<string> _polyBoolParams;
 
     bool isLocked = false;
     eCuteAnimalAnims currentAnimState = eCuteAnimalAnims.NONE;
 
-    // Start is called before the first frame update
     void Start()
     {
-        animator = GetComponent<Animator>();
+        if (animator == null)
+            animator = GetComponent<Animator>();
+
+        if (animator == null)
+            animator = GetComponentInChildren<Animator>();
+
+        if (isPolyPerfectAnimal)
+        {
+            CachePolyBoolParameters();
+        }
+
         SetAnimation(eCuteAnimalAnims.IDLE);
+
     }
 
-    // Update is called once per frame
     void Update()
     {
-        
+        // no-op, driven externally
     }
+
+    // ---------------- POLYPERFECT HELPERS ----------------
+
+    void CachePolyBoolParameters()
+    {
+        _polyBoolParams = new HashSet<string>();
+
+        if (animator == null)
+            return;
+
+        foreach (var p in animator.parameters)
+        {
+            if (p.type == AnimatorControllerParameterType.Bool)
+            {
+                _polyBoolParams.Add(p.name);
+            }
+        }
+    }
+
+    void ClearAllPolyBools()
+    {
+        if (animator == null || _polyBoolParams == null)
+            return;
+
+        foreach (var name in _polyBoolParams)
+        {
+            animator.SetBool(name, false);
+        }
+    }
+
+    void PlayFromSet(AnimationBoolSet set)
+    {
+        if (animator == null || set == null || set.parameterNames == null || set.parameterNames.Length == 0)
+            return;
+
+        string chosen;
+
+        if (set.parameterNames.Length == 1)
+        {
+            chosen = set.parameterNames[0];
+        }
+        else
+        {
+            int index = Random.Range(0, set.parameterNames.Length);
+            chosen = set.parameterNames[index];
+        }
+
+        if (string.IsNullOrEmpty(chosen))
+            return;
+
+        // If we haven't cached bool params (unlikely if isPolyPerfectAnimal is true), just try anyway.
+        if (_polyBoolParams != null && !_polyBoolParams.Contains(chosen))
+        {
+            // Silent fail to avoid spam, or log if you want:
+            // Debug.LogWarning($"[CuteAnimalAnimHandler] Animator has no bool '{chosen}' on {name}.");
+            return;
+        }
+
+        ClearAllPolyBools();
+        animator.SetBool(chosen, true);
+    }
+
+    void ApplyPolyPerfectAnimation(eCuteAnimalAnims animation)
+    {
+        switch (animation)
+        {
+            case eCuteAnimalAnims.IDLE:
+            case eCuteAnimalAnims.NONE:
+                // If there are defined idle bools, use them.
+                // Otherwise, clear all bools so the Animator's default state plays (idle clip).
+                if (!TryPlayNonEmpty(polyIdleSet))
+                    ClearAllPolyBools();
+                break;
+
+            case eCuteAnimalAnims.WALK:
+                if (!TryPlayNonEmpty(polyWalkSet))
+                {
+                    // Fallbacks if walk is missing
+                    if (!TryPlayNonEmpty(polyRunSet))
+                        if (!TryPlayNonEmpty(polyIdleSet))
+                            ClearAllPolyBools();
+                }
+                break;
+
+            case eCuteAnimalAnims.RUN:
+                // prefer run; fall back to walk; then idle; then default state
+                if (!TryPlayNonEmpty(polyRunSet))
+                {
+                    if (!TryPlayNonEmpty(polyWalkSet))
+                    {
+                        if (!TryPlayNonEmpty(polyIdleSet))
+                            ClearAllPolyBools();
+                    }
+                }
+                break;
+
+            case eCuteAnimalAnims.ATTACK:
+                if (!TryPlayNonEmpty(polyAttackSet))
+                {
+                    // Worst case, just go back to idle/default
+                    if (!TryPlayNonEmpty(polyIdleSet))
+                        ClearAllPolyBools();
+                }
+                break;
+
+            case eCuteAnimalAnims.DIE:
+                if (!TryPlayNonEmpty(polyDeathSet))
+                {
+                    // If no death anim wired, just freeze in whatever it was doing
+                    // (or you can ClearAllPolyBools() if you prefer)
+                    ClearAllPolyBools();
+                }
+                break;
+
+            case eCuteAnimalAnims.REST:
+                if (!TryPlayNonEmpty(polyRestSet))
+                {
+                    if (!TryPlayNonEmpty(polyIdleSet))
+                        ClearAllPolyBools();
+                }
+                break;
+
+            case eCuteAnimalAnims.EAT:
+                if (!TryPlayNonEmpty(polyEatSet))
+                {
+                    if (!TryPlayNonEmpty(polyIdleSet))
+                        ClearAllPolyBools();
+                }
+                break;
+
+            case eCuteAnimalAnims.DAMAGE:
+                // Quick hack: small flinch → fall back to idle/default
+                if (!TryPlayNonEmpty(polyIdleSet))
+                    ClearAllPolyBools();
+                break;
+
+            case eCuteAnimalAnims.JUMP:
+                // Many animals don't have a jump; treat as run/walk
+                if (!TryPlayNonEmpty(polyRunSet))
+                {
+                    if (!TryPlayNonEmpty(polyWalkSet))
+                    {
+                        if (!TryPlayNonEmpty(polyIdleSet))
+                            ClearAllPolyBools();
+                    }
+                }
+                break;
+        }
+    }
+
+
+    bool TryPlayNonEmpty(AnimationBoolSet set)
+    {
+        if (set == null || set.parameterNames == null || set.parameterNames.Length == 0)
+            return false;
+
+        PlayFromSet(set);
+        return true;
+    }
+
+    // ---------------- LOCKING HELPERS ----------------
 
     void LockAnimation()
     {
@@ -54,14 +258,12 @@ public class CuteAnimalAnimHandler : MonoBehaviour
 
     IEnumerator LockAnimationRoutine(float delay = 1f)
     {
-        //LockAnimation();
-
+        // LockAnimation(); // currently not locking before delay
         yield return new WaitForSeconds(delay);
-
         isLocked = false;
     }
 
-    // --- SPIDER / SNAKE SPECIAL HANDLERS ---
+    // ---------------- SPIDER / SNAKE SPECIAL HANDLERS (OLD) ----------------
 
     void ApplySpiderAnimation(eCuteAnimalAnims animation)
     {
@@ -153,6 +355,7 @@ public class CuteAnimalAnimHandler : MonoBehaviour
         }
     }
 
+    // ---------------- MAIN ENTRY POINT ----------------
 
     public void SetAnimation(eCuteAnimalAnims animation)
     {
@@ -164,6 +367,14 @@ public class CuteAnimalAnimHandler : MonoBehaviour
 
         currentAnimState = animation;
 
+        // 1) PolyPerfect path: new pack animals
+        if (isPolyPerfectAnimal)
+        {
+            ApplyPolyPerfectAnimation(animation);
+            return;
+        }
+
+        // 2) Old bool-based specials
         if (controllerType == CuteAnimControllerType.SpiderBool)
         {
             ApplySpiderAnimation(animation);
@@ -176,6 +387,7 @@ public class CuteAnimalAnimHandler : MonoBehaviour
             return;
         }
 
+        // 3) Default old system: int "animation" parameter
         switch (animation)
         {
             case eCuteAnimalAnims.IDLE:
@@ -235,7 +447,5 @@ public class CuteAnimalAnimHandler : MonoBehaviour
                     break;
                 }
         }
-
-        
     }
 }
