@@ -421,6 +421,8 @@ public class CCActor : MonoBehaviour
                                 Vector3 kb = (h.transform.position - transform.position).normalized;
                                 ai.ApplyKnockback(kb);
                             }
+
+                            break;
                         }
                     }
 

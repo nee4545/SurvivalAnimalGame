@@ -1,10 +1,9 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 using UnityEngine;
 using UnityEngine.AI;
-using UnityEngine.UIElements;
 using static CuteAnimalAI;
 
 
@@ -120,6 +119,19 @@ public class CuteAnimalAI : MonoBehaviour
     [Header("🗺️ Territory (Aggressive)")]
     [Tooltip("If true, Aggressive will never chase beyond a radius around its spawn.")]
     public bool territorialAggressive = false;
+
+
+    [Header("Aggressive Settings")]
+    public bool canPounce = false;
+    [Tooltip("Time between potential pounces while chasing")]
+    public float pounceCooldown = 4f;
+    [Tooltip("How strong the pounce jump is")]
+    public float pounceHeight = 3f;
+    [Tooltip("How far ahead to jump")]
+    public float pounceForwardDistance = 4f;
+    [HideInInspector]
+    public float pounceCooldownTimer = 0f;
+
 
     [Tooltip("Max radius (from spawnPosition) that Aggressive will chase into.")]
     public float aggressiveTerritoryRadius = 15f;
@@ -360,6 +372,9 @@ public class CuteAnimalAI : MonoBehaviour
     public float jumpLandingProbeRadius = 2f;
     [Tooltip("How long the aggressive jumper chases before returning home.")]
     public float chaseDuration = 5f;
+    [Header("Jump Return")]
+    public float jumpReturnApproachDistance = 2.5f; // must be THIS close to jump spot to jump
+    public float jumpReturnStopDistance = 1.5f;     // navmesh stopping distance
 
     [Header("Passive Jumping")]
     [Tooltip("Tag used for designer-placed perches (trees/rocks).")]
@@ -370,6 +385,8 @@ public class CuteAnimalAI : MonoBehaviour
     [Header("Jumping Cooldowns")]
     [Tooltip("How long to chill on the perch before allowed to jump down again (AggressiveJumping).")]
     public float perchCooldown = 1.0f;
+    // runtime gate
+    [NonSerialized] public float nextPerchEngageTime = 0f;
 
     [Tooltip("Horizontal speed used to scale jump duration for long jumps upward.")]
     public float jumpHorizontalSpeed = 5f; // try 4–7
@@ -534,7 +551,9 @@ public class CuteAnimalAI : MonoBehaviour
     [HideInInspector] public Vector3 playerVelocitySmoothed;
     [HideInInspector] private Vector3 _playerPrevPos;
 
-   
+    [HideInInspector] public Transform fallbackJumpSpot;
+
+
     private float lastAttackerMemory = 0.5f;
     
     [System.NonSerialized]
@@ -592,6 +611,31 @@ public class CuteAnimalAI : MonoBehaviour
             StateMachine.ChangeState(new AIRestState(this));
         }
     }
+
+    private bool ShouldKeepAgentDisabledForPerch()
+    {
+        if (aiType != AIType.AggressiveJumping) return false;
+
+        // If we’re perched OR any jump session is active, do not let LOD re-enable the agent.
+        if (jumpSessionActive) return true;
+        if (StateMachine != null && StateMachine.CurrentState is AIPerchRestState) return true;
+
+        return false;
+    }
+
+
+    public void EnsureJumpSpotFallback()
+    {
+        if (!fallbackJumpSpot) return;
+
+        if (jumpSpots == null) jumpSpots = new List<Transform>();
+        if (!jumpSpots.Contains(fallbackJumpSpot))
+            jumpSpots.Add(fallbackJumpSpot);
+
+        if (!currentJumpSpot)
+            currentJumpSpot = fallbackJumpSpot;
+    }
+
 
     public static void AdvanceLeaderNodeIndex(CuteAnimalAI ai)
     {
@@ -768,6 +812,18 @@ public class CuteAnimalAI : MonoBehaviour
             playerKnockbackDistance, playerKnockbackHeight, playerKnockbackDuration));
     }
 
+    public void StartAiKnockBack(Transform target, Vector3 direction)
+    {
+        direction.y = 0f;
+        if (direction.sqrMagnitude < 0.0001f)
+            direction = -player.forward.Flat(); // fallback
+
+        direction.Normalize();
+
+        StartCoroutine(PlayerKnockbackParabola(target, direction,
+            playerKnockbackDistance, playerKnockbackHeight, playerKnockbackDuration));
+    }
+
     private IEnumerator PlayerKnockbackParabola(Transform target, Vector3 dir, float distance, float height, float duration)
     {
         if (!target) yield break;
@@ -796,7 +852,6 @@ public class CuteAnimalAI : MonoBehaviour
         _playerKnockbackCo = null;
     }
 
-
     public void UpdateLocomotionAnimationAuto()
     {
         // Don’t override attack/death
@@ -824,7 +879,7 @@ public class CuteAnimalAI : MonoBehaviour
         }
     }
 
-    public Transform GetClosestThreatForCombat()
+    public Transform GetClosestThreatForCombat(float maxRange)
     {
         // Only these types should proactively target companions
         bool shouldTargetCompanions = aiType == AIType.Aggressive ||
@@ -838,19 +893,19 @@ public class CuteAnimalAI : MonoBehaviour
         // 1. Always prioritize the player if they are a valid target
         if (player != null)
         {
-            Health playerHealth = player.GetComponent<Health>();
-            if (playerHealth != null && !playerHealth.IsDead)
+            var playerHealth = player.GetComponent<Health>();
+            bool playerAlive = (playerHealth == null) || !playerHealth.IsDead;
+
+            if (playerAlive)
             {
                 float playerDist = DistanceToPlayer();
-                if (playerDist <= detectionRange)
-                {
-                    return player; // Player is in range and alive, target them first
-                }
+                if (playerDist <= maxRange)
+                    return player; // target player first
             }
         }
 
         // 2. If player is not in range or is dead, look for companions
-        int numFound = Physics.OverlapSphereNonAlloc(transform.position, detectionRange, PerfBuffers.c32, WhatIsCompanion());
+        int numFound = Physics.OverlapSphereNonAlloc(transform.position, maxRange, PerfBuffers.c32, WhatIsCompanion());
 
         Transform bestCompanion = null;
         float closestDistance = Mathf.Infinity;
@@ -941,6 +996,17 @@ public class CuteAnimalAI : MonoBehaviour
             {
                 threat = col.transform;
                 dist = dc;
+            }
+        }
+
+
+        if (lastAttacker != null && IsValidTarget(lastAttacker))
+        {
+            float da = Vector3.Distance(transform.position, lastAttacker.position);
+            if (da <= radius && da < dist)
+            {
+                threat = lastAttacker;
+                dist = da;
             }
         }
 
@@ -1067,7 +1133,7 @@ public class CuteAnimalAI : MonoBehaviour
     }
 
 
-    private bool TryResolvePlayer(bool force = false)
+    private bool TryResolvePlayer(bool force = true)
     {
         Transform candidate = null;
 
@@ -1080,6 +1146,12 @@ public class CuteAnimalAI : MonoBehaviour
         if (candidate == null)
         {
             var gos = GameObject.FindGameObjectsWithTag(playerTag);
+
+            if (gos != null && gos.Length > 1)
+            {
+                Debug.LogWarning($"[{name}] Multiple objects tagged '{playerTag}' found ({gos.Length}). Some AIs may target the wrong one.", this);
+            }
+
             Transform best = null;
             float bestSq = float.PositiveInfinity;
 
@@ -1093,7 +1165,19 @@ public class CuteAnimalAI : MonoBehaviour
             candidate = best;
         }
 
-        if (candidate == null) return false;
+        if (candidate == null)
+        {
+            var gos = GameObject.FindGameObjectsWithTag(playerTag);
+
+            for (int i = 0; i < gos.Length; i++)
+            {
+                var go = gos[i];
+                if (!go || !go.activeInHierarchy || !go.scene.IsValid()) continue;
+
+                candidate = go.transform;
+                break;
+            }
+        }
 
         if (force || player == null || player != candidate)
             player = candidate;
@@ -1146,7 +1230,7 @@ public class CuteAnimalAI : MonoBehaviour
         // Agent defaults (once is enough)
         agent.autoBraking = enableAutoBraking;
         agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
-        agent.avoidancePriority = Random.Range(30, 70);
+        agent.avoidancePriority = UnityEngine.Random.Range(30, 70);
         agent.autoBraking = true;
 
         // Jump spots list can be built once
@@ -1215,6 +1299,13 @@ public class CuteAnimalAI : MonoBehaviour
 
     private void OnDamaged(Transform victim, Transform attacker)
     {
+
+        PlayerEffects playerEffects = GetComponent<PlayerEffects>();
+        if (playerEffects)
+        {
+            playerEffects.PlayBloodVFX();
+        }
+
         // Only care if we were hit
         if (victim != this.transform) return;
         if (!attacker || !IsValidTarget(attacker)) return;
@@ -1272,9 +1363,30 @@ public class CuteAnimalAI : MonoBehaviour
                 else
                     StateMachine.ChangeState(new AIChaseState(this, attacker));
                 break;
+            case AIType.Passive:
+            case AIType.PassiveEasy:
+            case AIType.PassiveVeryEasy:
+            case AIType.PassiveHerd:
+                {
+                    // If we're already fleeing, don't spam state changes.
+                    if (StateMachine.CurrentState is AIFleeState ||
+                        StateMachine.CurrentState is AIFleeSimpleState ||
+                        StateMachine.CurrentState is AIFleeVeryEasyState ||
+                        StateMachine.CurrentState is AIFleeHerdState)
+                        break;
+
+                    // Flee immediately when hit (by player OR companions OR anything valid)
+                    IState flee =
+                        aiType == AIType.PassiveEasy ? new AIFleeSimpleState(this) :
+                        aiType == AIType.PassiveVeryEasy ? new AIFleeVeryEasyState(this) :
+                        aiType == AIType.PassiveHerd ? new AIFleeHerdState(this) :
+                        new AIFleeState(this);
+
+                    StateMachine.ChangeState(flee);
+                    break;
+                }
 
             default:
-                // Passives or companions can ignore
                 break;
         }
     }
@@ -1323,7 +1435,11 @@ public class CuteAnimalAI : MonoBehaviour
         }
         else
         {
-            if (!agent.enabled) EnsureAgentOnNavMesh(); // safely re-enable when coming back
+            if (!agent.enabled)
+            {
+                if (!ShouldKeepAgentDisabledForPerch())
+                    EnsureAgentOnNavMesh();
+            }
         }
     }
 
@@ -1442,7 +1558,7 @@ public class CuteAnimalAI : MonoBehaviour
             agent.enabled = true;
             agent.updateRotation = true;
             agent.autoBraking = enableAutoBraking;
-            agent.avoidancePriority = Random.Range(30, 70);
+            agent.avoidancePriority = UnityEngine.Random.Range(30, 70);
             agent.stoppingDistance = stopDistance;
             agent.speed = wanderSpeed;
             // DO NOT set isStopped or ResetPath yet.
@@ -1461,9 +1577,9 @@ public class CuteAnimalAI : MonoBehaviour
 
         if (aiType == AIType.AggressiveType4 && randomizeAggressiveStats)
         {
-            float mul = Random.Range(speedRandomRange.x, speedRandomRange.y);
+            float mul = UnityEngine.Random.Range(speedRandomRange.x, speedRandomRange.y);
             runtimeSpeedMul = mul;
-            runtimeTurnRateDeg = turnRateDeg * Random.Range(0.9f, 1.1f);
+            runtimeTurnRateDeg = turnRateDeg * UnityEngine.Random.Range(0.9f, 1.1f);
         }
 
 
@@ -1579,70 +1695,102 @@ public class CuteAnimalAI : MonoBehaviour
         return transform.position;
     }
 
-    public IEnumerator JumpArc(Vector3 from, Vector3 to, float height, float duration, bool landOnNavMesh = true)
+    public IEnumerator JumpArc(
+    Vector3 from,
+    Vector3 to,
+    float height,
+    float duration,
+    bool landOnNavMesh,
+    Transform faceTarget = null
+)
     {
-        // Disable while we animate the arc
-        if (agent.enabled) agent.enabled = false;
+        // Disable agent during jump so NavMesh doesn't interfere
+        if (agent.enabled)
+            agent.enabled = false;
 
-        // Face jump direction
-        Vector3 flatDir = (to - from); flatDir.y = 0f;
-        if (flatDir.sqrMagnitude > 0.0001f)
-            transform.rotation = Quaternion.LookRotation(flatDir.normalized);
+        float t = 0f;
 
-        // Animate parabola
-        float elapsed = 0f;
-        while (elapsed < duration)
+        // Cache start rotation
+        Quaternion startRot = transform.rotation;
+
+        // Compute facing direction ONCE (locked for entire jump)
+        Quaternion targetRot = startRot;
+        if (faceTarget != null)
         {
-            float t = Mathf.Clamp01(elapsed / duration);
+            Vector3 dir = faceTarget.position - transform.position;
+            dir.y = 0f;
 
-            // smooth horizontal/vertical blend
-            Vector3 pos = Vector3.Lerp(from, to, t);
-            // nice hump (0..π)
-            pos.y = Mathf.Lerp(from.y, to.y, t) + height * Mathf.Sin(Mathf.PI * t);
+            if (dir.sqrMagnitude > 0.001f)
+                targetRot = Quaternion.LookRotation(dir.normalized);
+        }
+
+        while (t < duration)
+        {
+            t += Time.deltaTime;
+            float normalized = Mathf.Clamp01(t / duration);
+
+            // Horizontal interpolation
+            Vector3 pos = Vector3.Lerp(from, to, normalized);
+
+            // Parabolic height
+            float yOffset = height * 4f * normalized * (1f - normalized);
+            pos.y += yOffset;
 
             transform.position = pos;
 
-            elapsed += Time.deltaTime;
+            // Smoothly rotate toward target during jump
+            transform.rotation = Quaternion.Slerp(startRot, targetRot, normalized);
+
             yield return null;
         }
 
-        if (!landOnNavMesh)
-        {
-            // Stay exactly at 'to' (perch), keep agent disabled
-            yield return null;
-            yield break;
-        }
+        // Ensure final position + rotation are exact
+        transform.position = to;
+        transform.rotation = targetRot;
 
-
-        // Find a safe landing on the NavMesh (spiral search)
-        Vector3 land;
-        if (!TryFindNavMeshPoint(to, jumpLandingProbeRadius, jumpLandingProbeRadius * 6f, out land))
+        // ─────────────────────────────────────────────
+        // Snap to NavMesh ONLY if requested
+        // ─────────────────────────────────────────────
+        if (landOnNavMesh)
         {
-            // last resort: around current position
-            TryFindNavMeshPoint(transform.position, jumpLandingProbeRadius * 6f, jumpLandingProbeRadius * 12f, out land);
-        }
+            Vector3 landPos = to;
 
-        // Re-enable & warp; give it one frame to register on the mesh
-        agent.enabled = true;
-#if UNITY_2022_1_OR_NEWER
-        bool warped = agent.Warp(land);
-#else
-    bool warped = true; agent.Warp(land);
-#endif
-        if (!warped)
-        {
-            // if warp somehow failed, keep trying for a couple frames
-            for (int i = 0; i < 5 && !agent.isOnNavMesh; i++)
+            if (!TryFindNavMeshPoint(
+                    to,
+                    jumpLandingProbeRadius,
+                    jumpLandingProbeRadius * 6f,
+                    out landPos))
             {
-                if (NavMesh.SamplePosition(land, out var hit, jumpLandingProbeRadius * 8f, NavMesh.AllAreas))
+                TryFindNavMeshPoint(
+                    transform.position,
+                    jumpLandingProbeRadius * 6f,
+                    jumpLandingProbeRadius * 12f,
+                    out landPos);
+            }
+
+            agent.enabled = true;
+            agent.Warp(landPos);
+
+            // Safety: ensure agent is on NavMesh
+            int tries = 0;
+            while (!agent.isOnNavMesh && tries++ < 5)
+            {
+                if (NavMesh.SamplePosition(landPos, out var hit, jumpLandingProbeRadius * 8f, NavMesh.AllAreas))
                     agent.Warp(hit.position);
+
                 yield return null;
             }
         }
+        else
+        {
+            // Stay off NavMesh (perched)
+            agent.enabled = false;
+        }
 
-        // Let the agent settle on the mesh this frame
         yield return null;
     }
+
+
 
     // Spiral/ring search so we never return off-mesh
     private bool TryFindNavMeshPoint(Vector3 center, float startRadius, float maxRadius, out Vector3 result)
@@ -1711,20 +1859,102 @@ public class CuteAnimalAI : MonoBehaviour
     {
         if (!agent || !agent.enabled || !agent.isOnNavMesh) return;
 
-        if (!forceNow)
+        // Aggressive/Chasing AI should path more responsively
+        bool isInCombat = aiType == AIType.Aggressive ||
+                          aiType == AIType.AggressiveType1 ||
+                          aiType == AIType.AggressiveType3 ||
+                          aiType == AIType.AggressiveType4 ||
+                          StateMachine.CurrentState is AIChaseState;
+
+        if (!forceNow && !isInCombat)
         {
             float navInterval = _lod == LOD.Near ? navIntervalNear
                               : _lod == LOD.Mid ? navIntervalMid
                               : navIntervalFar;
 
-            if (Time.time - _lastDestSetTime < navInterval) return;
-            if ((target - _lastDest).sqrMagnitude < minDestSqrDelta) return;
+            if (Time.time - _lastDestSetTime < navInterval)
+                return;
+
+            if ((target - _lastDest).sqrMagnitude < minDestSqrDelta)
+                return;
         }
 
         agent.SetDestination(target);
         _lastDest = target;
         _lastDestSetTime = Time.time;
     }
+
+   public  bool TryCombatInterrupt()
+   {
+        if (aiType == AIType.AggressiveType4)
+            return false;
+
+    if (!agent.enabled || !agent.isOnNavMesh || StateMachine == null)
+        return false;
+
+    if (StateMachine.CurrentState is AIAttackState ||
+        StateMachine.CurrentState is AIChaseState ||
+        StateMachine.CurrentState is AIJumpAttackState ||
+        StateMachine.CurrentState is AIWindupState ||
+        StateMachine.CurrentState is AIChargeState ||
+        StateMachine.CurrentState is AIReturnToBaseState)
+        return false;
+
+    Transform threat = GetClosestThreatForCombat(Mathf.Max(detectionRange, attackRange, chargeDetectionRange));
+    if (!threat) return false;
+
+    float dist = Vector3.Distance(transform.position, threat.position);
+
+    // Territorial flag enforcement
+    if (territorialAggressive && IsOutsideAggressiveTerritory(threat))
+        return false;
+
+    // Priority combat entry (based on AIType)
+    switch (aiType)
+    {
+        case AIType.AggressiveType1:
+            if (!isChargeCooldownActive && currentChargeAttempts < maxChargeAttempts && dist <= chargeDetectionRange)
+            {
+                StateMachine.ChangeState(new AIWindupState(this));
+                return true;
+            }
+            break;
+
+        case AIType.AggressiveJumping:
+            if (!jumpSessionActive && dist <= detectionRange && Time.time >= nextPerchEngageTime)
+            {
+                StateMachine.ChangeState(new AIJumpAttackState(this));
+                return true;
+            }
+            break;
+
+        case AIType.Aggressive:
+        case AIType.AggressiveType3:
+        case AIType.AggressiveType4:
+            if (dist <= attackRange)
+            {
+                StateMachine.ChangeState(new AIAttackState(this, threat));
+                return true;
+            }
+            else if (dist <= detectionRange)
+            {
+                StateMachine.ChangeState(new AIChaseState(this, threat));
+                return true;
+            }
+            break;
+
+        case AIType.AggressiveType2:
+            if (wasProvoked && dist <= detectionRange)
+            {
+                StateMachine.ChangeState(new AIChaseState(this, threat));
+                return true;
+            }
+            break;
+    }
+
+    return false;
+}
+
 
     private void Update()
     {
@@ -1789,6 +2019,9 @@ public class CuteAnimalAI : MonoBehaviour
             return;
         }
 
+        if (TryCombatInterrupt())
+            return;
+
         if (StateMachine.CurrentState is AIChargeState)
         {
             StateMachine.Update();
@@ -1797,6 +2030,9 @@ public class CuteAnimalAI : MonoBehaviour
 
         // 3) Cool down your basic attack timer
         attackTimer -= Time.deltaTime;
+
+        if (canPounce && pounceCooldownTimer > 0f)
+            pounceCooldownTimer -= Time.deltaTime;
 
         // 4) AggressiveType1 charge cooldown
         if (aiType == AIType.AggressiveType1 && isChargeCooldownActive)
@@ -1809,27 +2045,6 @@ public class CuteAnimalAI : MonoBehaviour
             }
         }
 
-        // 5) AggressiveType2 “retaliation delay” logic
-        //if (aiType == AIType.AggressiveType2 && wasProvoked)
-        //{
-        //    provokedTimer -= Time.deltaTime;
-        //    if (provokedTimer <= 0f)
-        //    {
-        //        // --- STEP 4: reset the provoked flag so future hits re-trigger flee ---
-        //        wasProvoked = false;
-
-        //        // Now transition to chase or attack depending on range
-        //        float dist = Vector3.Distance(transform.position, player.position);
-        //        if (dist <= attackRange)
-        //            StateMachine.ChangeState(new AIAttackState(this));
-        //        else
-        //            StateMachine.ChangeState(new AIChaseState(this));
-        //        return;
-        //    }
-        //}
-
-        float distance = DistanceToPlayer();
-
         if (aiType == AIType.AggressiveJumping
             && jumpSessionActive
             && Time.time >= jumpSessionDeadline)
@@ -1838,18 +2053,6 @@ public class CuteAnimalAI : MonoBehaviour
             if (!(s is AIJumpReturnHomeState) && !(s is AIPerchRestState))
             {
                 StateMachine.ChangeState(new AIJumpReturnHomeState(this));
-                return;
-            }
-        }
-
-
-        // --- Only allow jump re-triggers when NOT in a session ---
-        // New (only trigger from perch state)
-        if (!jumpSessionActive && StateMachine.CurrentState is AIPerchRestState)
-        {
-            if (aiType == AIType.AggressiveJumping && distance <= detectionRange)
-            {
-                StateMachine.ChangeState(new AIJumpAttackState(this));
                 return;
             }
         }
@@ -1983,6 +2186,10 @@ public class CuteAnimalAI : MonoBehaviour
 
         knockbackVector = direction;
         knockbackTimer = knockbackDuration;
+
+        if (aiType == AIType.AggressiveJumping)
+            return;
+
         agent.ResetPath();
         //animHandler?.SetAnimation(eCuteAnimalAnims.DAMAGE);
     }
@@ -2035,6 +2242,12 @@ public class CuteAnimalAI : MonoBehaviour
             Vector3 deathPos = transform.position;
             Quaternion deathRot = transform.rotation;
             lootDropper.DropAt(deathPos,deathRot);
+        }
+
+        PlayerEffects playerEffects = GetComponent<PlayerEffects>();
+        if (playerEffects)
+        {
+            playerEffects.PlayDeadVFX();
         }
     }
 
@@ -2103,13 +2316,13 @@ public class AIRestState : IState
     public void Enter()
     {
         // 1) Random rest duration
-        restTimer = Random.Range(5f, 10f);
+        restTimer = UnityEngine.Random.Range(1f, 3f);
 
         // 2) Pick eat vs rest
         if (ai.aiType == AIType.AggressiveType1 || ai.aiType == AIType.AggressiveType2)
             isEating = true;
         else
-            isEating = Random.value > 0.5f;
+            isEating = UnityEngine.Random.value > 0.5f;
 
         // 3) Halt the agent so it doesn't idle‑override our animation
         ai.agent.ResetPath();
@@ -2138,7 +2351,8 @@ public class AIRestState : IState
 
         if (isAggressiveNonT2)
         {
-            currentThreat = ai.GetClosestThreatForCombat();
+            float maxAggroRange = Mathf.Max(ai.detectionRange, ai.attackRange, ai.chargeDetectionRange);
+            currentThreat = ai.GetClosestThreatForCombat(maxAggroRange);
             threatDistance = currentThreat ? Vector3.Distance(ai.transform.position, currentThreat.position) : Mathf.Infinity;
 
             //// NEW
@@ -2167,7 +2381,7 @@ public class AIRestState : IState
         else
         {
             // Passive families use player distance
-            threatDistance = ai.DistanceToPlayer();
+            ai.TryGetNearestFearSource(ai.fleeRange, out currentThreat, out threatDistance);
         }
 
 
@@ -2330,19 +2544,73 @@ public class AIRestState : IState
 
         return (count > 0) ? totalPush / count : Vector3.zero;
     }
-
-
-    private void UpdateMovementAnimation()
-    {
-        float speed = ai.agent.velocity.magnitude;
-        if (!ai.agent.hasPath || ai.agent.isStopped || speed < 0.05f)
-            ai.animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
-        else if (speed < ai.wanderSpeed + 0.2f)
-            ai.animHandler?.SetAnimation(eCuteAnimalAnims.WALK);
-        else
-            ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
-    }
 }
+
+public class AIPounceState : IState
+{
+    private CuteAnimalAI ai;
+    private Transform target;
+    private bool hasPounced = false;
+
+    public AIPounceState(CuteAnimalAI ai, Transform target)
+    {
+        this.ai = ai;
+        this.target = target;
+    }
+
+    public void Enter()
+    {
+        ai.agent.isStopped = true;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.JUMP);
+        ai.StartCoroutine(PounceRoutine());
+    }
+
+    IEnumerator PounceRoutine()
+    {
+        ai.pounceCooldownTimer = ai.pounceCooldown;
+
+        Vector3 start = ai.transform.position;
+        Vector3 forward = (target.position - start).normalized;
+        Vector3 end = start + forward * ai.pounceForwardDistance;
+
+        ai.transform.forward = (end - start).normalized;
+
+        // Clamp to ground (optional)
+        NavMeshHit hit;
+        if (NavMesh.SamplePosition(end, out hit, 2f, NavMesh.AllAreas))
+        {
+            end = hit.position;
+        }
+
+        float height = ai.pounceHeight;
+        float duration = 0.6f;
+        float t = 0f;
+
+        hasPounced = true;
+
+        while (t < 1f)
+        {
+            t += Time.deltaTime / duration;
+            float y = 4 * height * t * (1 - t);
+            Vector3 pos = Vector3.Lerp(start, end, t);
+            pos.y += y;
+
+            ai.transform.position = pos;
+            yield return null;
+        }
+
+        ai.agent.Warp(ai.transform.position);
+        ai.agent.isStopped = false;
+
+        // Resume chase
+        ai.StateMachine.ChangeState(new AIChaseState(ai, target));
+    }
+
+    public void Update() { }
+
+    public void Exit() { }
+}
+
 
 
 
@@ -2365,7 +2633,7 @@ public class AIChaseType4State : IState
         // Surge cycle init
         phase = SpeedPhase.Normal;
         phaseTimer = 0f;
-        nextSurgeAt = Time.time + Random.Range(ai.t4SurgeEvery.x, ai.t4SurgeEvery.y);
+        nextSurgeAt = Time.time + UnityEngine.Random.Range(ai.t4SurgeEvery.x, ai.t4SurgeEvery.y);
 
     }
 
@@ -2429,7 +2697,7 @@ public class AIChaseType4State : IState
                     if (phaseTimer <= 0f)
                     {
                         phase = SpeedPhase.Normal;
-                        nextSurgeAt = Time.time + Random.Range(ai.t4SurgeEvery.x, ai.t4SurgeEvery.y);
+                        nextSurgeAt = Time.time + UnityEngine.Random.Range(ai.t4SurgeEvery.x, ai.t4SurgeEvery.y);
                     }
                     break;
             }
@@ -2479,7 +2747,8 @@ public class AIWanderState : IState
 
         if (ai.aiType == AIType.Aggressive || ai.aiType == AIType.AggressiveType3 || ai.aiType == AIType.AggressiveType4)
         {
-            currentThreat = ai.GetClosestThreatForCombat();
+            float maxAggroRange = Mathf.Max(ai.detectionRange, ai.attackRange, ai.chargeDetectionRange);
+            currentThreat = ai.GetClosestThreatForCombat(maxAggroRange);
             threatDistance = currentThreat != null ?
                 Vector3.Distance(ai.transform.position, currentThreat.position) : Mathf.Infinity;
         }
@@ -2662,7 +2931,7 @@ public class AIWanderState : IState
     {
         for (int attempt = 0; attempt < 5; attempt++)
         {
-            Vector3 randomOffset = Random.insideUnitSphere * ai.homeRadius;
+            Vector3 randomOffset = UnityEngine.Random.insideUnitSphere * ai.homeRadius;
             randomOffset.y = 0;
             Vector3 candidate = ai.spawnPosition + randomOffset;
 
@@ -2697,7 +2966,7 @@ public class AIWanderState : IState
     {
         Vector3 baseTarget;
       
-            Vector3 randomDir = Random.insideUnitSphere * ai.wanderRadius;
+            Vector3 randomDir = UnityEngine.Random.insideUnitSphere * ai.wanderRadius;
             randomDir += ai.transform.position;
             if (NavMesh.SamplePosition(randomDir, out var hit, ai.wanderRadius, NavMesh.AllAreas))
                 baseTarget = hit.position;
@@ -3059,8 +3328,8 @@ public class AIFleeHerdState : IState
             scatterAnchor = ai.transform.position;
 
             // pick a personal scatter point around anchor and head there once
-            float r = Random.Range(ai.herdScatterRadius.x, ai.herdScatterRadius.y);
-            float ang = Random.Range(0f, 360f);
+            float r = UnityEngine.Random.Range(ai.herdScatterRadius.x, ai.herdScatterRadius.y);
+            float ang = UnityEngine.Random.Range(0f, 360f);
             Vector3 offset = Quaternion.Euler(0f, ang, 0f) * (Vector3.forward * r);
             Vector3 target = ai.SampleOnNavmesh(scatterAnchor + offset, r + 2f);
             ai.SetDestinationSmart(target, forceNow: true);
@@ -3113,6 +3382,7 @@ public class AIChaseState : IState
 
     public void Enter()
     {
+        ai.agent.isStopped = false;
         ai.agent.speed = ai.chaseSpeed;
         ai.agent.stoppingDistance = ai.stopDistance;
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
@@ -3120,6 +3390,7 @@ public class AIChaseState : IState
 
     public void Update()
     {
+        ai.agent.isStopped = false;
 
         // NEW: Territorial leash for AggressiveType2
         if (ai.aiType == CuteAnimalAI.AIType.Aggressive
@@ -3145,22 +3416,24 @@ public class AIChaseState : IState
         if (dist > ai.detectionRange * 1.5f) { ai.ChangeStateToWander(); return; }
         if (dist <= ai.attackRange) { ai.StateMachine.ChangeState(new AIAttackState(ai, chaseTarget)); return; }
 
-        ai.SetDestinationSmart(chaseTarget.position);
+        if (!ai.agent.isOnNavMesh)
+            Debug.LogError($"[{ai.name}] is NOT on NavMesh");
 
-        //float distanceToPlayer = ai.DistanceToPlayer();
+        // Optional pounce to close gap
+        if (ai.canPounce && ai.pounceCooldownTimer <= 0f)
+        {
+            float Jumpdist = Vector3.Distance(ai.transform.position, chaseTarget.position);
+            if (Jumpdist > ai.attackRange + 1f && dist < ai.detectionRange)
+            {
+                ai.StateMachine.ChangeState(new AIPounceState(ai, chaseTarget));
+                return;
+            }
+        }
 
-        //if (distanceToPlayer > ai.detectionRange)
-        //{
-        //    ai.StateMachine.ChangeState(new AIWanderState(ai));
-        //    return;
-        //}
-        //if (distanceToPlayer <= ai.attackRange)
-        //{
-        //    ai.StateMachine.ChangeState(new AIAttackState(ai));
-        //    return;
-        //}
 
-        //ai.SetDestinationSmart(chaseTarget.position);
+        ai.SetDestinationSmart(chaseTarget.position,true);
+
+      
     }
 
     public void Exit() { }
@@ -3201,6 +3474,13 @@ public class AIAttackState : IState
             {
                 ph.TakeDamage(ai.attackDamage);
             }
+
+            PlayerEffects effects = attackTarget.GetComponent<PlayerEffects>();
+            if(effects!=null)
+            {
+                effects.PlayBloodVFX();
+            }
+
             ai.attackTimer = ai.attackCooldown;
         }
     }
@@ -3431,7 +3711,7 @@ public class AIFleeState : IState
 
         for (int i = 0; i < ai.fleeAttempts; i++)
         {
-            Vector3 randomDir = Quaternion.Euler(0, Random.Range(-90f, 90f), 0) * Vector3.forward;
+            Vector3 randomDir = Quaternion.Euler(0, UnityEngine.Random.Range(-90f, 90f), 0) * Vector3.forward;
             Vector3 retryPos = ai.transform.position + randomDir * (ai.fleeRange * 0.5f);
             if (NavMesh.SamplePosition(retryPos, out var retryHit, ai.fleeRange, NavMesh.AllAreas))
             {
@@ -3541,6 +3821,7 @@ public class AIWindupState : IState
         timer -= Time.deltaTime;
         if (timer <= 0)
         {
+            ai.transform.forward = dir;
             ai.StateMachine.ChangeState(new AIChargeState(ai));
         }
     }
@@ -3551,120 +3832,138 @@ public class AIWindupState : IState
 public class AIChargeState : IState
 {
     private CuteAnimalAI ai;
-    private float timer;
     private Vector3 chargeDirection;
-    private Vector3 overshootPoint;
+    private float timer;
     private bool hasHitPlayer;
 
-    // How far past the player we want to go (in units)
-    private float overshootDistance => ai.chargeSpeed * ai.chargeDuration * 1f;
+    private float overshootDistance => ai.chargeSpeed * ai.chargeDuration;
 
-    public AIChargeState(CuteAnimalAI ai) { this.ai = ai; }
+    public AIChargeState(CuteAnimalAI ai)
+    {
+        this.ai = ai;
+    }
 
     public void Enter()
     {
-        // 1) Count attempt
+        // Count attempt
         ai.currentChargeAttempts++;
 
-        // If we’ve just used the last attempt, arm cooldown.
         if (ai.currentChargeAttempts >= ai.maxChargeAttempts)
         {
             ai.isChargeCooldownActive = true;
             ai.chargeCooldownTimer = ai.chargeCooldownDuration;
         }
 
-        ai.agent.speed = ai.chargeSpeed;
+        // Disable NavMesh movement completely
         ai.agent.ResetPath();
-        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+        ai.agent.enabled = false;
 
-        // We control rotation manually during the charge, not the NavMeshAgent
-        ai.agent.updateRotation = false;
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
 
         timer = ai.chargeDuration;
         hasHitPlayer = false;
 
-        // 2) Lock direction & overshoot point ONCE
+        // Lock charge direction ONCE
         if (ai.player != null)
-        {
-            chargeDirection = (ai.player.position - ai.transform.position)
-                                .Flat()
-                                .normalized;
-
-            overshootPoint = ai.player.position + chargeDirection * overshootDistance;
-        }
+            chargeDirection = (ai.player.position - ai.transform.position).Flat().normalized;
         else
-        {
-            chargeDirection = ai.transform.forward.Flat().normalized;
-            overshootPoint = ai.transform.position + chargeDirection * overshootDistance;
-        }
-
-        if (chargeDirection.sqrMagnitude < 0.0001f)
             chargeDirection = ai.transform.forward.Flat().normalized;
 
-        // Face locked direction
+        if (chargeDirection.sqrMagnitude < 0.001f)
+            chargeDirection = ai.transform.forward.Flat().normalized;
+
         ai.transform.rotation = Quaternion.LookRotation(chargeDirection);
-
-        ai.agent.stoppingDistance = 0f;
-        ai.SetDestinationSmart(overshootPoint, forceNow: true);
     }
 
     public void Update()
     {
-        timer -= Time.deltaTime;
+        float dt = Time.deltaTime;
+        timer -= dt;
 
-        // Keep rotation locked to the original charge direction
-        Quaternion targetRot = Quaternion.LookRotation(chargeDirection);
-        ai.transform.rotation = Quaternion.RotateTowards(
-            ai.transform.rotation,
-            targetRot,
-            ai.companionRotationLerp * Time.deltaTime
+        // Move forward manually (unstoppable)
+        Vector3 delta = chargeDirection * ai.chargeSpeed * dt;
+        ai.transform.position += delta;
+
+        // Lock rotation
+        ai.transform.rotation = Quaternion.LookRotation(chargeDirection);
+
+        // Detect everything in front
+        Collider[] hits = Physics.OverlapSphere(
+            ai.transform.position,
+            ai.chargeDamageRadius
         );
 
-        // 2) Collision with player during the charge
-        if (!hasHitPlayer && ai.player != null)
+        foreach (var hit in hits)
         {
-            float distToPlayer = Vector3.Distance(ai.transform.position, ai.player.position);
-            if (distToPlayer <= ai.chargeDamageRadius)
+            if (!hit) continue;
+
+            // Player hit
+            if (!hasHitPlayer && hit.transform == ai.player)
             {
-                if (ai.player.TryGetComponent<Health>(out var hp))
+                if (hit.TryGetComponent<Health>(out var hp))
                     hp.TakeDamage(ai.chargeDamage);
 
-                // Knock the player back on a parabolic arc
                 Vector3 knockDir = (ai.player.position - ai.transform.position).Flat().normalized;
                 ai.StartPlayerKnockback(knockDir);
 
                 hasHitPlayer = true;
+                continue;
+            }
 
-                // We still keep charging visually; cooldown is already armed in Enter()
+            // Other animals hit
+            if (hit.CompareTag("Animal"))
+            {
+                var otherAI = hit.GetComponent<CuteAnimalAI>();
+                if (otherAI && otherAI != ai)
+                {
+                    Vector3 knockDir = (otherAI.transform.position - ai.transform.position).Flat().normalized;
+                    ai.StartAiKnockBack(otherAI.transform, knockDir);
+                }
             }
         }
 
-        // 3) Termination: only based on time or overshoot, NOT on hasHitPlayer
-        bool reachedOvershoot = !ai.agent.pathPending && ai.agent.remainingDistance <= 0.1f;
-
-        if (timer <= 0f || reachedOvershoot)
+        // End charge purely by time
+        if (timer <= 0f)
         {
-            bool haveAttemptsLeft = ai.currentChargeAttempts < ai.maxChargeAttempts;
-            bool playerClose = ai.player &&
-                               Vector3.Distance(ai.transform.position, ai.player.position) <= ai.chargeDetectionRange;
+            EndCharge();
+        }
+    }
 
-            // If we still have attempts and player is close, chain into another windup
-            if (!ai.isChargeCooldownActive && haveAttemptsLeft && playerClose)
-            {
-                ai.StateMachine.ChangeState(new AIWindupState(ai));
-                return;
-            }
+    private void EndCharge()
+    {
+        // Re-enable NavMeshAgent
+        ai.agent.enabled = true;
 
-            // Otherwise always go home after a completed charge
+        // Snap safely back to NavMesh
+        if (NavMesh.SamplePosition(ai.transform.position, out var hit, 3f, NavMesh.AllAreas))
+        {
+            ai.agent.Warp(hit.position);
+        }
+
+        bool canChain =
+            !ai.isChargeCooldownActive &&
+            ai.currentChargeAttempts < ai.maxChargeAttempts &&
+            ai.player &&
+            Vector3.Distance(ai.transform.position, ai.player.position) <= ai.chargeDetectionRange;
+
+        if (canChain)
+        {
+            ai.StateMachine.ChangeState(new AIWindupState(ai));
+        }
+        else
+        {
             ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
         }
     }
 
     public void Exit()
     {
-        ai.agent.updateRotation = true;
+        // Safety restore
+        if (!ai.agent.enabled)
+            ai.agent.enabled = true;
     }
 }
+
 
 
 public static class Vector3Extensions
@@ -3769,7 +4068,7 @@ public class AIFleeVeryEasyState : IState
                 if (edgeHit.distance < ai.navMeshEdgeThreshold)
                 {
                     // Hit an edge, choose a new direction randomly
-                    fleeDirection = Random.insideUnitSphere;
+                    fleeDirection = UnityEngine.Random.insideUnitSphere;
                     fleeDirection.y = 0;
                     fleeDirection.Normalize();
 
@@ -3905,7 +4204,8 @@ public class AIReturnToBaseState : IState
         if (isAggressiveCore)
         {
             // This prefers player, then companions.
-            threat = ai.GetClosestThreatForCombat();
+            float maxAggroRange = Mathf.Max(ai.detectionRange, ai.attackRange, ai.chargeDetectionRange);
+            threat = ai.GetClosestThreatForCombat(maxAggroRange);
             if (!threat)
                 return;
 
@@ -4157,8 +4457,8 @@ public class AICompanionIdleState : IState
 
     private void PickIdleTarget()
     {
-        float angle = Random.value * Mathf.PI * 2f;
-        float radius = Random.Range(ai.idleMinRadius, ai.idleMaxRadius);
+        float angle = UnityEngine.Random.value * Mathf.PI * 2f;
+        float radius = UnityEngine.Random.Range(ai.idleMinRadius, ai.idleMaxRadius);
         Vector3 offset = new Vector3(Mathf.Cos(angle), 0, Mathf.Sin(angle)) * radius;
         idleTarget = ai.player.position + offset;
     }
@@ -4224,7 +4524,7 @@ public class AICompanionIdleState : IState
         if (idleTimer <= 0f)
         {
             PickIdleTarget();
-            idleTimer = ai.idleMoveInterval * Random.Range(0.8f, 1.2f);
+            idleTimer = ai.idleMoveInterval * UnityEngine.Random.Range(0.8f, 1.2f);
         }
 
         // 3) compute combined target with flocking
@@ -4635,7 +4935,7 @@ public class AIPackChaseState : IState
         orbitClockwise = (ai.GetInstanceID() & 1) == 0;
 
         // Stagger repaths so they don't sync
-        nextRepathTime = Time.time + Random.Range(0f, ai.packRepathInterval * 0.5f);
+        nextRepathTime = Time.time + UnityEngine.Random.Range(0f, ai.packRepathInterval * 0.5f);
 
         // Optional initial burst you already had
         bool isRearFlanker = (total >= 4 && index == 0);
@@ -4813,6 +5113,7 @@ public class AIJumpAttackState : IState
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
 
         Vector3 start = ai.transform.position;
+
         Vector3 desiredLand = ai.player ? ai.player.position : start;
         Vector3 land = ai.SampleOnNavmesh(desiredLand, ai.jumpLandingProbeRadius);
 
@@ -4824,7 +5125,7 @@ public class AIJumpAttackState : IState
     private IEnumerator JumpAndChase(Vector3 start, Vector3 land)
     {
         // Jump down
-        yield return ai.StartCoroutine(ai.JumpArc(start, land, ai.jumpHeight, ai.jumpDuration));
+        yield return ai.StartCoroutine(ai.JumpArc(start, land, ai.jumpHeight, ai.jumpDuration, true, ai.player));
 
         // Give the agent a few frames to settle onto the mesh
         int settleTries = 10;
@@ -4897,136 +5198,74 @@ public class AIJumpAttackState : IState
 
 public class AIJumpReturnHomeState : IState
 {
-    private CuteAnimalAI ai;
-    private Vector3 footPoint;
-    private bool startedJump;
-    private float noProgressTimer;
+    private readonly CuteAnimalAI ai;
 
-    private const float JumpTriggerRadius = 1.5f;   // a bit looser
-    private const float NoProgressTimeout = 1.25f;  // seconds
-
-    public AIJumpReturnHomeState(CuteAnimalAI ai) { this.ai = ai; }
+    public AIJumpReturnHomeState(CuteAnimalAI ai)
+    {
+        this.ai = ai;
+    }
 
     public void Enter()
     {
-        ai.jumpSessionActive = true;
-
-        footPoint = ai.GetPerchFootPointForReturn();
-
-        if (!ai.agent.enabled) ai.agent.enabled = true;
-        ai.agent.updateRotation = true;
+        ai.agent.enabled = true;
         ai.agent.isStopped = false;
-        ai.agent.stoppingDistance = 0f;
-        ai.agent.speed = ai.chaseSpeed;
+        ai.agent.stoppingDistance = ai.jumpReturnStopDistance;
 
-        if (!ai.agent.isOnNavMesh &&
-            NavMesh.SamplePosition(ai.transform.position, out var snap, ai.jumpLandingProbeRadius * 4f, NavMesh.AllAreas))
-        {
-            ai.agent.Warp(snap.position);
-        }
+        // Move TOWARDS the jump spot first
+        Vector3 groundTarget = ai.currentJumpSpot.position;
+        groundTarget.y = ai.transform.position.y;
 
+        ai.SetDestinationSmart(groundTarget, forceNow: true);
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
-
-        // ✅ If there’s no complete path to the foot, try a reachable point along the way
-        if (!ai.HasCompletePath(footPoint))
-        {
-            Vector3 reachable = ai.FindReachableToward(footPoint);
-            if ((reachable - ai.transform.position).sqrMagnitude > 0.2f)
-                ai.SetDestinationSmart(reachable);
-            else
-            {
-                // Nothing reachable → jump straight back to perch from here
-                startedJump = true;
-                ai.agent.ResetPath();
-                ai.StartCoroutine(JumpUpThenRest());
-                return;
-            }
-        }
-        else
-        {
-            ai.SetDestinationSmart(footPoint);
-        }
-
-        noProgressTimer = NoProgressTimeout;
-        startedJump = false;
     }
 
     public void Update()
     {
-        if (startedJump) return;
-
-        if (!ai.agent.enabled) { ai.agent.enabled = true; return; }
-        if (!ai.agent.isOnNavMesh)
+        if (!ai.currentJumpSpot)
         {
-            if (NavMesh.SamplePosition(ai.transform.position, out var snap, ai.jumpLandingProbeRadius * 4f, NavMesh.AllAreas))
-                ai.agent.Warp(snap.position);
+            //ai.ChangeStateToIdle();
             return;
         }
 
-        // If our path is invalid/partial at any point → try reachable, else jump up
-        if (!ai.agent.hasPath || ai.agent.pathStatus != NavMeshPathStatus.PathComplete)
-        {
-            Vector3 reachable = ai.FindReachableToward(footPoint);
-            if ((reachable - ai.transform.position).sqrMagnitude > 0.2f)
-                ai.SetDestinationSmart(reachable);
-            else
-            {
-                startedJump = true;
-                ai.agent.ResetPath();
-                ai.StartCoroutine(JumpUpThenRest());
-                return;
-            }
-        }
+        float dist = Vector3.Distance(
+            new Vector3(ai.transform.position.x, 0f, ai.transform.position.z),
+            new Vector3(ai.currentJumpSpot.position.x, 0f, ai.currentJumpSpot.position.z)
+        );
 
-        // “No progress” fail-safe: velocity near zero while far from target
-        if (ai.agent.remainingDistance > 2f && ai.agent.velocity.sqrMagnitude < 0.01f)
-        {
-            noProgressTimer -= Time.deltaTime;
-            if (noProgressTimer <= 0f)
-            {
-                // Try a fresh reachable point; if still nothing, jump up
-                Vector3 reachable = ai.FindReachableToward(footPoint);
-                if (ai.HasCompletePath(reachable))
-                {
-                    ai.SetDestinationSmart(reachable);
-                    noProgressTimer = NoProgressTimeout;
-                }
-                else
-                {
-                    startedJump = true;
-                    ai.agent.ResetPath();
-                    ai.StartCoroutine(JumpUpThenRest());
-                    return;
-                }
-            }
-        }
-        else
-        {
-            noProgressTimer = NoProgressTimeout;
-        }
+        // 🔒 Only jump if CLOSE ENOUGH
+        if (dist > ai.jumpReturnApproachDistance)
+            return;
 
-        // Normal “close to foot” trigger
-        float dist = Vector3.Distance(ai.transform.position, footPoint);
-        if (dist <= JumpTriggerRadius || (!ai.agent.pathPending && ai.agent.remainingDistance <= JumpTriggerRadius))
-        {
-            startedJump = true;
-            ai.agent.ResetPath();
-            ai.StartCoroutine(JumpUpThenRest());
-        }
+        // Stop agent before jump
+       // ai.agent.isStopped = true;
+
+        ai.StartCoroutine(JumpUpThenRest());
     }
 
     private IEnumerator JumpUpThenRest()
     {
         Vector3 from = ai.transform.position;
-        Vector3 to = ai.spawnPosition;
+        Vector3 to = ai.currentJumpSpot.position;
 
-        if (ai.agent.enabled) ai.agent.enabled = false;
-        yield return ai.StartCoroutine(ai.JumpArc(from, to, ai.jumpHeight, ai.jumpDuration, landOnNavMesh: false));
+        yield return ai.StartCoroutine(
+            ai.JumpArc(
+                from,
+                to,
+                ai.jumpHeight,
+                ai.jumpDuration,
+                landOnNavMesh: false,
+                faceTarget: ai.currentJumpSpot
+            )
+        );
 
         ai.StateMachine.ChangeState(new AIPerchRestState(ai));
     }
 
-    public void Exit() { }
+    public void Exit()
+    {
+        if (ai.agent.enabled)
+            ai.agent.isStopped = false;
+    }
 }
 
 
@@ -5046,21 +5285,25 @@ public class AIPerchRestState : IState
         ai.agent.enabled = false;
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
         ai.jumpSessionActive = false;
+        ai.nextPerchEngageTime = Time.time + ai.perchCooldown;
+
 
     }
 
     public void Update()
     {
+        if (!ai.player) return;
+
+        if (Time.time < ai.nextPerchEngageTime) return;
+
         float dist = ai.DistanceToPlayer();
 
-        //if (ai.aiType == CuteAnimalAI.AIType.AggressiveJumping)
-        //{
-        //    if (dist <= ai.detectionRange)
-        //    {
-        //        ai.StateMachine.ChangeState(new AIJumpAttackState(ai));
-        //        return;
-        //    }
-        //}
+        // Only trigger jump attack if player is close enough
+        if (dist <= ai.detectionRange && !ai.jumpSessionActive)
+        {
+            ai.StateMachine.ChangeState(new AIJumpAttackState(ai));
+            return;
+        }
     }
 
     public void Exit() {  }

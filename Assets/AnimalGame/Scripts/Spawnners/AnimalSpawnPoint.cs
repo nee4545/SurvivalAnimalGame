@@ -171,6 +171,16 @@ public class AnimalSpawnPoint : MonoBehaviour
             // Migration hookup (if prefab is MigratingAi and this point has a path)
             var ai = go.GetComponent<CuteAnimalAI>();
 
+            if (ai && ai.aiType == CuteAnimalAI.AIType.AggressiveJumping)
+            {
+                // If designer didn't place JumpSpots, treat THIS spawn point as the jump spot
+                if (!ai.fallbackJumpSpot)
+                    ai.fallbackJumpSpot = this.transform;
+
+                // In case Start() already ran (pool reuse edge case), enforce now too
+                ai.EnsureJumpSpotFallback();
+            }
+
             if (ai && ai.aiType == CuteAnimalAI.AIType.MigratingAi && migrationPath)
             {
                 ai.ConfigureMigration(this, migrationPath);

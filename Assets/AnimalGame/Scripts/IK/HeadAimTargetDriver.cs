@@ -15,15 +15,15 @@ public class HeadAimTargetDriver : MonoBehaviour
         if (!ai || !headAimTarget) return;
 
         // Pick something interesting to look at
-        Transform t = ai.GetClosestThreatForCombat() ?? ai.player;
-        if (!t) return;
+        //Transform t = ai.GetClosestThreatForCombat() ?? ai.player;
+        //if (!t) return;
 
-        Vector3 targetPos = t.position + Vector3.up * heightOffset;
+        //Vector3 targetPos = t.position + Vector3.up * heightOffset;
 
-        // tiny lead if target is moving (useful for the player)
-        if (t.TryGetComponent<Rigidbody>(out var rb))
-            targetPos += Vector3.ClampMagnitude(rb.velocity * 0.1f, maxLead);
+        //// tiny lead if target is moving (useful for the player)
+        //if (t.TryGetComponent<Rigidbody>(out var rb))
+        //    targetPos += Vector3.ClampMagnitude(rb.velocity * 0.1f, maxLead);
 
-        headAimTarget.position = Vector3.Lerp(headAimTarget.position, targetPos, followLerp * Time.deltaTime);
+        //headAimTarget.position = Vector3.Lerp(headAimTarget.position, targetPos, followLerp * Time.deltaTime);
     }
 }
