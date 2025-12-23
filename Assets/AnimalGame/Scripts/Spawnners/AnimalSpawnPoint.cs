@@ -179,6 +179,9 @@ public class AnimalSpawnPoint : MonoBehaviour
 
                 // In case Start() already ran (pool reuse edge case), enforce now too
                 ai.EnsureJumpSpotFallback();
+
+                Vector3 anchor = ResolveGroundAnchor(transform.position);
+                ai.SetJumpAnchor(anchor);
             }
 
             if (ai && ai.aiType == CuteAnimalAI.AIType.MigratingAi && migrationPath)
@@ -235,6 +238,26 @@ public class AnimalSpawnPoint : MonoBehaviour
         }
         return null;
     }
+
+    Vector3 ResolveGroundAnchor(Vector3 origin)
+    {
+        // 1️⃣ Raycast down to terrain
+        if (Physics.Raycast(origin + Vector3.up * 2f, Vector3.down, out var hit, 10f,
+            LayerMask.GetMask("Terrain")))
+        {
+            return hit.point;
+        }
+
+        // 2️⃣ Fallback to NavMesh
+        if (NavMesh.SamplePosition(origin, out var navHit, 3f, NavMesh.AllAreas))
+        {
+            return navHit.position;
+        }
+
+        // 3️⃣ Worst case fallback
+        return origin;
+    }
+
 
     int CountAggressiveAliveSceneWide()
     {

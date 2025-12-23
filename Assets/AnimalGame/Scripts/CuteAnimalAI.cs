@@ -121,7 +121,7 @@ public class CuteAnimalAI : MonoBehaviour
     public bool territorialAggressive = false;
 
 
-    [Header("Aggressive Settings")]
+    [Header("Pounce Settings")]
     public bool canPounce = false;
     [Tooltip("Time between potential pounces while chasing")]
     public float pounceCooldown = 4f;
@@ -131,6 +131,9 @@ public class CuteAnimalAI : MonoBehaviour
     public float pounceForwardDistance = 4f;
     [HideInInspector]
     public float pounceCooldownTimer = 0f;
+
+    [Header("Flee Pounce")]
+    public float fleePounceTriggerDistance = 5f;
 
 
     [Tooltip("Max radius (from spawnPosition) that Aggressive will chase into.")]
@@ -384,6 +387,10 @@ public class CuteAnimalAI : MonoBehaviour
     [Tooltip("Tag used for designer-placed perches (trees/rocks).")]
     public string jumpSpotTag = "JumpSpot";
 
+    [Header("Jumping AI")]
+    public Vector3 jumpAnchorPosition;
+    public bool hasJumpAnchor;
+
     [Tooltip("How close to the foot of the JumpSpot before jumping up.")]
     public float jumpSpotApproachRadius = 1.25f;
     [Header("Jumping Cooldowns")]
@@ -603,6 +610,12 @@ public class CuteAnimalAI : MonoBehaviour
     public bool IsAtHome()
     {
         return Vector3.Distance(transform.position, spawnPosition) <= homeRadius * 0.5f;
+    }
+
+    public void SetJumpAnchor(Vector3 pos)
+    {
+        jumpAnchorPosition = pos;
+        hasJumpAnchor = true;
     }
 
     public void ConfigureMigration(AnimalSpawnPoint owner, MigrationPath path)
@@ -967,6 +980,24 @@ public class CuteAnimalAI : MonoBehaviour
         target.position = end;
         target.GetComponent<CCActor>().isInParabola = false;
         _playerKnockbackCo = null;
+    }
+
+    public void OnPounceComplete()
+    {
+        if (IsPassiveType())
+        {
+            StateMachine.ChangeState(new AIFleeState(this));
+        }
+        else
+        {
+            StateMachine.ChangeState(new AIChaseState(this, player));
+        }
+    }
+
+
+    bool IsPassiveType()
+    {
+        return aiType == AIType.Passive;
     }
 
     public void UpdateLocomotionAnimationAuto()
@@ -2685,17 +2716,26 @@ public class AIRestState : IState
     }
 }
 
+public enum PounceMode
+{
+    TowardTarget,
+    AwayFromTarget
+}
+
 public class AIPounceState : IState
 {
     private CuteAnimalAI ai;
     private Transform target;
     private bool hasPounced = false;
+    private readonly PounceMode mode;
 
-    public AIPounceState(CuteAnimalAI ai, Transform target)
+    public AIPounceState(CuteAnimalAI ai, Transform target, PounceMode mode)
     {
         this.ai = ai;
         this.target = target;
+        this.mode = mode;
     }
+
 
     public void Enter()
     {
@@ -2709,8 +2749,13 @@ public class AIPounceState : IState
         ai.pounceCooldownTimer = ai.pounceCooldown;
 
         Vector3 start = ai.transform.position;
-        Vector3 forward = (target.position - start).normalized;
-        Vector3 end = start + forward * ai.pounceForwardDistance;
+        Vector3 dir = (target.position - start).Flat().normalized;
+
+        if (mode == PounceMode.AwayFromTarget)
+            dir = -dir;
+
+        Vector3 end = start + dir * ai.pounceForwardDistance;
+        ai.transform.forward = dir;
 
         ai.transform.forward = (end - start).normalized;
 
@@ -2738,11 +2783,15 @@ public class AIPounceState : IState
             yield return null;
         }
 
-        ai.agent.Warp(ai.transform.position);
+        if (ai.agent.enabled && NavMesh.SamplePosition(ai.transform.position, out var hits, 2f, NavMesh.AllAreas))
+        {
+            ai.agent.Warp(hits.position);
+        }
+
         ai.agent.isStopped = false;
 
-        // Resume chase
-        ai.StateMachine.ChangeState(new AIChaseState(ai, target));
+        // Let AI decide what comes next
+        ai.OnPounceComplete();
     }
 
     public void Update() { }
@@ -3631,7 +3680,7 @@ public class AIChaseState : IState
             float Jumpdist = Vector3.Distance(ai.transform.position, chaseTarget.position);
             if (Jumpdist > ai.attackRange + 1f && dist < ai.detectionRange)
             {
-                ai.StateMachine.ChangeState(new AIPounceState(ai, chaseTarget));
+                ai.StateMachine.ChangeState(new AIPounceState(ai, chaseTarget,PounceMode.TowardTarget));
                 return;
             }
         }
@@ -3812,6 +3861,19 @@ public class AIFleeState : IState
         if (!ai.TryGetNearestFearSource(ai.fleeRange * 3f, out Transform fear, out float fearDist))
         {
             ai.ChangeStateToWander();
+            return;
+        }
+
+        // --- Emergency pounce to break pressure ---
+        if (ai.canPounce &&
+            ai.pounceCooldownTimer <= 0f
+            &&                     // already in your system
+            fearDist < ai.fleePounceTriggerDistance // new tuning param
+        )
+        {
+            ai.StateMachine.ChangeState(
+                new AIPounceState(ai, fear, PounceMode.AwayFromTarget)
+            );
             return;
         }
 
@@ -5503,7 +5565,7 @@ public class AIJumpReturnHomeState : IState
     private IEnumerator JumpUpThenRest()
     {
         Vector3 from = ai.transform.position;
-        Vector3 to = ai.currentJumpSpot.position;
+        Vector3 to = ai.jumpAnchorPosition;
 
         yield return ai.StartCoroutine(
             ai.JumpArc(
