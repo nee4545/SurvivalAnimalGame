@@ -238,7 +238,11 @@ public class CuteAnimalAI : MonoBehaviour
     [Tooltip("When true, this animal ignores player aggression/damage triggers.")]
     public bool isMigratingMoving;
 
-    [HideInInspector] public bool isMigrationLeader;
+    [Header("Migration Impact")]
+    public float migrationImpactRadius = 1.8f;
+    public float migrationImpactDot = 0.5f;
+
+    public bool isMigrationLeader;
     [HideInInspector] public int migrationNodeIndex;
 
     [Header("😤 Retaliation (AggressiveType2)")]
@@ -436,6 +440,11 @@ public class CuteAnimalAI : MonoBehaviour
     [HideInInspector] public List<Transform> jumpSpots = new();
     [HideInInspector] public Transform currentJumpSpot;
 
+    [HideInInspector] public bool resumeMigrationAfterCombat;
+    [HideInInspector] public bool migrationInterrupted;
+
+    [HideInInspector] public MigrationHerd activeMigrationHerd;
+
     [HideInInspector] public bool jumpSessionActive;
     [HideInInspector] public float jumpSessionDeadline;
 
@@ -545,6 +554,14 @@ public class CuteAnimalAI : MonoBehaviour
     private float _lastDestSetTime;
     public float minDestSqrDelta = 0.16f;  // 0.4m delta before we re-path
 
+
+    // --- Parabolic knockback for AI victims (used by Charge, etc.) ---
+    private Coroutine _aiKnockbackCo;
+    private bool _aiParabolicKnockbackActive;
+    private bool _savedAgentUpdatePos;
+    private bool _savedAgentUpdateRot;
+    private bool _savedAgentStopped;
+
     [HideInInspector] public float runtimeSpeedMul = 1f;
     [HideInInspector] public float runtimeTurnRateDeg = 90f;
 
@@ -602,12 +619,14 @@ public class CuteAnimalAI : MonoBehaviour
     /// </summary>
     public void ChangeStateToRest()
     {
+
         if (forceReturnHome && !IsAtHome())
         {
             StateMachine.ChangeState(new AIReturnToBaseState(this));
         }
         else
         {
+
             StateMachine.ChangeState(new AIRestState(this));
         }
     }
@@ -667,6 +686,7 @@ public class CuteAnimalAI : MonoBehaviour
     /// </summary>
     public void ChangeStateToWander()
     {
+
         if (forceReturnHome && !IsAtHome())
         {
             StateMachine.ChangeState(new AIReturnToBaseState(this));
@@ -814,19 +834,115 @@ public class CuteAnimalAI : MonoBehaviour
 
     public void StartAiKnockBack(Transform target, Vector3 direction)
     {
+        if (!target) return;
+
         direction.y = 0f;
         if (direction.sqrMagnitude < 0.0001f)
-            direction = -player.forward.Flat(); // fallback
+            direction = (target.position - transform.position).Flat(); // fallback away from charger
+
+        if (direction.sqrMagnitude < 0.0001f)
+            direction = transform.forward.Flat();
 
         direction.Normalize();
 
+        // If the thing we hit is another CuteAnimalAI, pause its brain + move it on an arc, then warp on landing.
+        var otherAI = target.GetComponent<CuteAnimalAI>();
+        if (otherAI != null)
+        {
+            otherAI.StartParabolicAerialKnockback(direction, playerKnockbackDistance, playerKnockbackHeight, playerKnockbackDuration);
+            return;
+        }
+
+        // Fallback: move any arbitrary transform on the same arc (no warp / no brain pause).
         StartCoroutine(PlayerKnockbackParabola(target, direction,
             playerKnockbackDistance, playerKnockbackHeight, playerKnockbackDuration));
     }
 
+    // ————————————————————————————————————————————————————————————
+    // AI aerial knockback (parabolic) — pauses this AI’s brain + warps on landing
+    // ————————————————————————————————————————————————————————————
+    public void StartParabolicAerialKnockback(Vector3 direction, float distance, float height, float duration)
+    {
+        direction.y = 0f;
+        if (direction.sqrMagnitude < 0.0001f) return;
+        direction.Normalize();
+
+        if (_aiKnockbackCo != null) StopCoroutine(_aiKnockbackCo);
+        _aiKnockbackCo = StartCoroutine(AIKnockbackParabola(direction, distance, height, duration));
+    }
+
+    private IEnumerator AIKnockbackParabola(Vector3 dir, float distance, float height, float duration)
+    {
+        _aiParabolicKnockbackActive = true;
+
+        // Pause NavMeshAgent “ground snapping” while we manually animate in 3D.
+        if (agent != null)
+        {
+            _savedAgentUpdatePos = agent.updatePosition;
+            _savedAgentUpdateRot = agent.updateRotation;
+            _savedAgentStopped = agent.isStopped;
+
+            agent.ResetPath();
+            agent.isStopped = true;
+            agent.updatePosition = false;
+            agent.updateRotation = false;
+        }
+
+        // Clear any ground knockback that might still be active.
+        knockbackTimer = 0f;
+        knockbackVector = Vector3.zero;
+
+        Vector3 start = transform.position;
+        Vector3 end = start + dir * distance;
+
+        float elapsed = 0f;
+        while (elapsed < duration)
+        {
+            float t = Mathf.Clamp01(elapsed / duration);
+
+            Vector3 pos = Vector3.Lerp(start, end, t);
+            pos.y = Mathf.Lerp(start.y, end.y, t) + height * Mathf.Sin(Mathf.PI * t);
+
+            transform.position = pos;
+
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
+
+        // Land + warp agent cleanly back onto the navmesh near the landing spot.
+        Vector3 land = end;
+
+        if (agent != null && agent.enabled)
+        {
+            if (NavMesh.SamplePosition(land, out var hit, 2f, NavMesh.AllAreas))
+                land = hit.position;
+
+            agent.updatePosition = _savedAgentUpdatePos;
+            agent.updateRotation = _savedAgentUpdateRot;
+
+            if (agent.isOnNavMesh)
+                agent.Warp(land);
+            else
+                transform.position = land;
+
+            agent.isStopped = _savedAgentStopped;
+        }
+        else
+        {
+            transform.position = land;
+        }
+
+        _aiParabolicKnockbackActive = false;
+        _aiKnockbackCo = null;
+    }
+
+
+
     private IEnumerator PlayerKnockbackParabola(Transform target, Vector3 dir, float distance, float height, float duration)
     {
         if (!target) yield break;
+
+        target.GetComponent<CCActor>().isInParabola = true;
 
         Vector3 start = target.position;
         Vector3 end = start + dir * distance;
@@ -849,6 +965,7 @@ public class CuteAnimalAI : MonoBehaviour
         }
 
         target.position = end;
+        target.GetComponent<CCActor>().isInParabola = false;
         _playerKnockbackCo = null;
     }
 
@@ -1194,6 +1311,14 @@ public class CuteAnimalAI : MonoBehaviour
         health = GetComponent<Health>();
         player = PlayerLocator.Instance;
 
+        if (agent)
+        {
+            agent.obstacleAvoidanceType =
+                aiType == AIType.PassiveHerd || aiType == AIType.MigratingAi
+                ? ObstacleAvoidanceType.NoObstacleAvoidance
+                : ObstacleAvoidanceType.LowQualityObstacleAvoidance;
+        }
+
         // Gather all renderers (SkinnedMeshRenderer/MeshRenderer)
         _renderers = GetComponentsInChildren<Renderer>(true);
         _mpb = new MaterialPropertyBlock();
@@ -1385,6 +1510,17 @@ public class CuteAnimalAI : MonoBehaviour
                     StateMachine.ChangeState(flee);
                     break;
                 }
+            case AIType.MigratingAi:
+                if (StateMachine.CurrentState is AIMigrateRestState)
+                {
+                    migrationInterrupted = true;
+                    resumeMigrationAfterCombat = true;
+                    wasProvoked = true;
+
+                    Transform threat = attacker ? attacker : player;
+                    StateMachine.ChangeState(new AIAttackState(this, threat));
+                }
+                break;
 
             default:
                 break;
@@ -2015,9 +2151,15 @@ public class CuteAnimalAI : MonoBehaviour
         if (knockbackTimer > 0f)
         {
             knockbackTimer -= Time.deltaTime;
-            agent.Move(knockbackVector * Time.deltaTime);
+            if(agent.isOnNavMesh)
+            {
+                agent.Move(knockbackVector * Time.deltaTime);
+            }
             return;
         }
+
+        if (_aiParabolicKnockbackActive)
+            return;
 
         if (TryCombatInterrupt())
             return;
@@ -2158,6 +2300,12 @@ public class CuteAnimalAI : MonoBehaviour
             StateMachine.ChangeState(new AIFleeThenHuntState(this));
         }
 
+        if(aiType == AIType.MigratingAi &&  !(StateMachine.CurrentState is AIMigrateState))
+        {
+            wasProvoked = true;
+            StateMachine.ChangeState(new AIAttackState(this));
+        }
+
         if (aiType == AIType.AggressiveType1)
         {
             if (StateMachine.CurrentState is AIReturnToBaseState)
@@ -2170,15 +2318,6 @@ public class CuteAnimalAI : MonoBehaviour
                 }
                 // If not in melee range, do nothing special – keep going home.
             }
-            //else
-            //{
-            //    // In all other states, we can still restart a charge if we're not on cooldown
-            //    // and we still have attempts left.
-            //    if (!isChargeCooldownActive && currentChargeAttempts < maxChargeAttempts)
-            //    {
-            //        StateMachine.ChangeState(new AIWindupState(this));
-            //    }
-            //}
         }
 
         if (_renderers != null)
@@ -3000,15 +3139,50 @@ public class AIMigrateState : IState
     {
         this.ai = ai;
         this.herd = herd;
+       
     }
 
     public void Enter()
     {
         ai.isMigratingMoving = true;
         ai.agent.isStopped = false;
+        ai.activeMigrationHerd = herd;
+
+        if (!ai.isMigrationLeader && herd != null && herd.Leader != null)
+        {
+            ai.migrationNodeIndex = herd.Leader.migrationNodeIndex;
+        }
+
+        if (herd != null)
+            herd.Register(ai);
+
 
         ai.agent.speed = ai.isMigrationLeader ? ai.migrationMoveSpeed : ai.migrationFollowerSpeed;
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.RUN);
+
+        if (herd != null && !herd.Memebers.Contains(ai))
+            Debug.LogWarning($"[MIGRATE] {ai.name} entered migrate but is NOT in herd list!");
+
+    }
+
+    void CheckMigrationCollisionWithPlayer()
+    {
+        if (!ai.player) return;
+
+        float dist = Vector3.Distance(ai.transform.position, ai.player.position);
+        if (dist > ai.migrationImpactRadius)
+            return;
+
+        Vector3 toPlayer = (ai.player.position - ai.transform.position).Flat().normalized;
+        float frontDot = Vector3.Dot(ai.transform.forward, toPlayer);
+
+        // Head-on only
+        if (frontDot > ai.migrationImpactDot)
+        {
+            if(ai.player.GetComponent<CCActor>().isInParabola == false)
+            ai.StartPlayerKnockback(toPlayer);
+            //ai.player.GetComponent<CCActor>().ApplyKnockback(toPlayer);
+        }
     }
 
     public void Update()
@@ -3020,6 +3194,7 @@ public class AIMigrateState : IState
         }
 
 
+        CheckMigrationCollisionWithPlayer();
 
         // Leader goes to next node; followers go to their slot near leader
         if (ai.isMigrationLeader)
@@ -3031,11 +3206,15 @@ public class AIMigrateState : IState
                     ai.SetDestinationSmart(node.point.position, forceNow: true);
 
                 bool reached =
-                    !ai.agent.pathPending &&
-                    ai.agent.remainingDistance <= Mathf.Max(ai.agent.stoppingDistance, 0.35f);
+                 !ai.agent.pathPending &&
+                    (
+                    ai.agent.remainingDistance <= Mathf.Max(ai.agent.stoppingDistance, 1f)
+                    || ai.agent.velocity.sqrMagnitude < 0.05f
+                    );
 
                 if (reached)
                 {
+                    Debug.Log($"[MIGRATE] Leader reached node. HerdCount={herd.Memebers.Count}");
                     // ✅ If rest is 0 → advance immediately and keep migrating (no idle frame)
                     if (node.restSeconds <= 0.01f)
                     {
@@ -3043,7 +3222,15 @@ public class AIMigrateState : IState
                         return;                              // next Update will target next node
                     }
 
-                    ai.StateMachine.ChangeState(new AIMigrateRestState(ai, herd, node.restSeconds));
+                    herd.BeginRest(node.restSeconds);
+
+                    foreach (var member in herd.Memebers)
+                    {
+                        member.StateMachine.ChangeState(
+                            new AIMigrateRestState(member, herd, node.restSeconds)
+                        );
+                    }
+                    //ai.StateMachine.ChangeState(new AIMigrateRestState(ai, herd, node.restSeconds));
                 }
             }
         }
@@ -3100,6 +3287,10 @@ public class AIMigrateRestState : IState
     public void Enter()
     {
         ai.isMigratingMoving = false;
+        ai.activeMigrationHerd = herd;
+
+        if (herd != null)
+            herd.Register(ai);
 
         // If rest is basically zero, don’t stop at all.
         if (restSeconds <= 0.01f)
@@ -3124,25 +3315,40 @@ public class AIMigrateRestState : IState
     public void Update()
     {
         // During rest: if player in detection range → attack
-        if (ai.player)
+        if (ai.wasProvoked)
         {
-            float d = Vector3.Distance(ai.transform.position, ai.player.position);
-            if (d <= ai.detectionRange)
-            {
-                ai.agent.isStopped = false;
-                ai.StateMachine.ChangeState(new AIAttackState(ai));
-                return;
-            }
+            ai.migrationInterrupted = true;
+            ai.resumeMigrationAfterCombat = true;
+
+            Transform threat =
+                ai.retaliationTarget ? ai.retaliationTarget :
+                ai.lastAttacker ? ai.lastAttacker :
+                ai.player;
+
+            ai.agent.isStopped = false;
+            ai.wasProvoked = false;
+            ai.StateMachine.ChangeState(new AIAttackState(ai, threat));
+            return;
         }
+
+        if (!ai.isMigrationLeader)
+            return;
 
         // ✅ Real-time check
         if (Time.unscaledTime >= endTime)
         {
-            if (ai.isMigrationLeader)
-                AdvanceNode();
+            herd.EndRest();
+            AdvanceNode();
 
-            ai.agent.isStopped = false;
-            ai.StateMachine.ChangeState(new AIMigrateState(ai, herd));
+            foreach (var member in herd.Memebers)
+            {
+                member.agent.isStopped = false;
+                member.StateMachine.ChangeState(
+                    new AIMigrateState(member, herd)
+                );
+            }
+
+            return;
         }
     }
 
@@ -3500,6 +3706,7 @@ public class AIAttackState : IState
             return;
         }
 
+
         timer -= Time.deltaTime;
         if (timer <= 0f)
         {
@@ -3524,12 +3731,37 @@ public class AIAttackState : IState
             }
             else
             {
-                ai.ChangeStateToWander();
+                if (ai.resumeMigrationAfterCombat && ai.activeMigrationHerd != null)
+                {
+                    ai.resumeMigrationAfterCombat = false;
+                    ai.migrationInterrupted = false;
+
+                    var herd = ai.activeMigrationHerd;
+
+                    // 🔥 THIS IS THE FIX
+                    if (herd.IsResting && herd.RemainingRestTime > 0.01f)
+                    {
+                        ai.StateMachine.ChangeState(
+                            new AIMigrateRestState(ai, herd, herd.RemainingRestTime)
+                        );
+                    }
+                    else
+                    {
+                        ai.StateMachine.ChangeState(
+                            new AIMigrateState(ai, herd)
+                        );
+                    }
+                }
+                else
+                {
+                    ai.ChangeStateToWander();
+                }
             }
         }
-    }
 
-    public void Exit() { }
+        }
+
+        public void Exit() { }
 }
 
 // ================== FLEE STATE ==================
@@ -3835,6 +4067,9 @@ public class AIChargeState : IState
     private Vector3 chargeDirection;
     private float timer;
     private bool hasHitPlayer;
+    private int mask = 0;
+
+    private HashSet<int> _hitIds;
 
     private float overshootDistance => ai.chargeSpeed * ai.chargeDuration;
 
@@ -3845,6 +4080,8 @@ public class AIChargeState : IState
 
     public void Enter()
     {
+         mask = LayerMask.GetMask("Enemy", "Companions", "Player");
+        _hitIds = new HashSet<int>(16);
         // Count attempt
         ai.currentChargeAttempts++;
 
@@ -3890,12 +4127,16 @@ public class AIChargeState : IState
         // Detect everything in front
         Collider[] hits = Physics.OverlapSphere(
             ai.transform.position,
-            ai.chargeDamageRadius
+            ai.chargeDamageRadius,
+            mask, QueryTriggerInteraction.Ignore
         );
 
         foreach (var hit in hits)
         {
             if (!hit) continue;
+
+            if (hit.transform == ai.transform)
+                continue;
 
             // Player hit
             if (!hasHitPlayer && hit.transform == ai.player)
@@ -3914,6 +4155,13 @@ public class AIChargeState : IState
             if (hit.CompareTag("Animal"))
             {
                 var otherAI = hit.GetComponent<CuteAnimalAI>();
+                if (!otherAI || otherAI == ai)
+                    continue;
+
+                int id = otherAI.GetInstanceID();
+                if (_hitIds != null && !_hitIds.Add(id))
+                    continue;
+
                 if (otherAI && otherAI != ai)
                 {
                     Vector3 knockDir = (otherAI.transform.position - ai.transform.position).Flat().normalized;
@@ -4097,6 +4345,16 @@ public class AIReturnToBaseState : IState
 
     public void Enter()
     {
+
+        if (ai.activeMigrationHerd != null)
+        {
+            // Migration overrides return-to-base
+            ai.StateMachine.ChangeState(
+                new AIMigrateState(ai, ai.activeMigrationHerd)
+            );
+            return;
+        }
+
         ai.agent.isStopped = false;
         ai.agent.updateRotation = true;
         ai.agent.speed = ai.wanderSpeed;

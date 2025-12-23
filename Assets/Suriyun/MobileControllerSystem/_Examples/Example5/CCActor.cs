@@ -131,6 +131,8 @@ public class CCActor : MonoBehaviour
     private float _starveDamageAccum; // accumulates fractional starvation damage
     [HideInInspector] public Health health;  // player health reference
 
+    public bool isInParabola = false;
+
 
 
     private float defaultStepOffset;
@@ -315,6 +317,7 @@ public class CCActor : MonoBehaviour
     void Update()
     {
         if (isDead) return;
+        if (isInParabola) return;
 
         // Update input
         if (virtualJoystick != null)
@@ -581,28 +584,85 @@ public class PlayerMoveState : IState
 public class PlayerKnockbackState : IState
 {
     private CCActor actor;
-    private Vector3 dir;
+    private Vector3 horizontalDir;
+    private float verticalVelocity;
     private float timer;
-    public PlayerKnockbackState(CCActor a, Vector3 d)
+
+    // tuning
+    private float knockDuration = 0.6f;
+    private float horizontalSpeed = 26f;
+    private float gravity = -35f;
+
+    public PlayerKnockbackState(CCActor actor, Vector3 dir)
     {
-        actor = a;
-        dir = d.normalized;
+        this.actor = actor;
+        horizontalDir = dir.Flat().normalized;
     }
+
     public void Enter()
     {
-        timer = 0.2f;
+        timer = knockDuration;
+
+        // initial upward impulse
+        verticalVelocity = 18f;
+
+        // hard-disable movement input
+        actor.inputVec = Vector2.zero;
+
         actor.animHandler?.SetAnimation(eCuteAnimalAnims.DAMAGE);
     }
+
     public void Update()
     {
         timer -= Time.deltaTime;
-        actor.Move(dir * 5f);
-        if (timer <= 0)
-            actor.StateMachine.ChangeState(
-                actor.HasMovementInput() ? new PlayerMoveState(actor) : new PlayerIdleState(actor));
+
+        // apply gravity
+        verticalVelocity += gravity * Time.deltaTime;
+
+        Vector3 motion =
+            horizontalDir * horizontalSpeed +
+            Vector3.up * verticalVelocity;
+
+        actor.controller.Move(motion * Time.deltaTime);
+
+        // early exit if grounded and falling
+        if (actor.controller.isGrounded && verticalVelocity <= 0f)
+        {
+            EndKnockback();
+            return;
+        }
+
+        if (timer <= 0f)
+        {
+            EndKnockback();
+        }
     }
+
+    void EndKnockback()
+    {
+        //SnapToGround();
+        actor.StateMachine.ChangeState(
+            actor.HasMovementInput()
+                ? new PlayerMoveState(actor)
+                : new PlayerIdleState(actor)
+        );
+    }
+
+    void SnapToGround()
+    {
+        if (Physics.Raycast(actor.transform.position + Vector3.up * 0.2f,
+                            Vector3.down, out RaycastHit hit,
+                            2f, actor.groundMask))
+        {
+            Vector3 p = actor.transform.position;
+            p.y = hit.point.y;
+            actor.transform.position = p;
+        }
+    }
+
     public void Exit() { }
 }
+
 
 public class PlayerDeadState : IState
 {
@@ -615,5 +675,8 @@ public class PlayerDeadState : IState
     public void Update() { }
     public void Exit() { }
 }
+
+
+
 
 #endregion

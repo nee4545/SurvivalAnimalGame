@@ -238,6 +238,9 @@ public class AnimalSpawnPoint : MonoBehaviour
 
     int CountAggressiveAliveSceneWide()
     {
+        //This sis major fps braker disabled for now
+        return 0;
+
         var all = GameObject.FindObjectsOfType<CuteAnimalAI>();
         int count = 0;
         for (int i = 0; i < all.Length; i++)

@@ -1,30 +1,62 @@
 using System.Collections.Generic;
+using Unity.VisualScripting;
 using UnityEngine;
 
 public class MigrationHerd : MonoBehaviour
 {
-    public List<CuteAnimalAI> members = new();
+    public List<CuteAnimalAI> Memebers = new();
+    public bool IsResting { get; private set; }
+    public float RestEndTime { get; private set; }
 
     public CuteAnimalAI Leader
     {
         get
         {
-            members.RemoveAll(m => !m || !m.gameObject.activeInHierarchy);
-            for (int i = 0; i < members.Count; i++)
-                if (members[i].isMigrationLeader) return members[i];
-            return members.Count > 0 ? members[0] : null;
+            Memebers.RemoveAll(m => m == null);
+
+            for (int i = 0; i < Memebers.Count; i++)
+                if (Memebers[i].isMigrationLeader) return Memebers[i];
+            return Memebers.Count > 0 ? Memebers[0] : null;
         }
     }
 
     public void Register(CuteAnimalAI ai)
     {
-        if (!ai || members.Contains(ai)) return;
+        if (!ai || Memebers.Contains(ai)) return;
 
-        members.Add(ai);
+        Memebers.Add(ai);
 
         // First one becomes leader
-        if (members.Count == 1)
+        if (Memebers.Count == 1)
             ai.isMigrationLeader = true;
+    }
+
+    public void BeginRest(float seconds)
+    {
+        IsResting = seconds > 0.01f;
+        RestEndTime = Time.unscaledTime + seconds;
+    }
+
+    public void EndRest()
+    {
+        IsResting = false;
+    }
+
+    public float RemainingRestTime =>
+        IsResting ? Mathf.Max(0f, RestEndTime - Time.unscaledTime) : 0f;
+
+
+    public void ResumeMigration()
+    {
+        foreach (var member in Memebers)
+        {
+            member.resumeMigrationAfterCombat = false;
+            member.migrationInterrupted = false;
+
+            member.StateMachine.ChangeState(
+                new AIMigrateState(member, this)
+            );
+        }
     }
 
     public Vector3 GetFollowerSlot(CuteAnimalAI follower)
@@ -33,7 +65,7 @@ public class MigrationHerd : MonoBehaviour
         if (!leader) return follower.transform.position;
 
         // follower index (skip leader)
-        int idx = members.IndexOf(follower);
+        int idx = Memebers.IndexOf(follower);
         if (idx < 0) idx = 1;
         if (leader == follower) idx = 0;
 
