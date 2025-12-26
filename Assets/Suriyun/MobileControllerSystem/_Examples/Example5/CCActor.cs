@@ -193,6 +193,17 @@ public class CCActor : MonoBehaviour
         return dot >= cos;
     }
 
+    bool IsMobilePlatform()
+    {
+#if UNITY_EDITOR
+        return false;
+#elif UNITY_ANDROID || UNITY_IOS
+    return true;
+#else
+    return false;
+#endif
+    }
+
 
 
     void Awake()
@@ -221,6 +232,20 @@ public class CCActor : MonoBehaviour
     }
 
 
+    void ReadMovementInput()
+    {
+        if (IsMobilePlatform() && virtualJoystick != null && virtualJoystick.gameObject.activeInHierarchy)
+        {
+            inputVec = virtualJoystick.GetAxis();
+        }
+        else
+        {
+            inputVec = moveAction != null
+                ? moveAction.action.ReadValue<Vector2>()
+                : Vector2.zero;
+        }
+    }
+
 
     void Start()
     {
@@ -228,14 +253,22 @@ public class CCActor : MonoBehaviour
         jumpAction?.action.Enable();
         attackAction?.action.Enable();
 
-        // Always enable virtual joystick for testing
         virtualJoystick = VirtualJoystick.GetInstance(0);
-        if (virtualJoystick != null)
-            virtualJoystick.gameObject.SetActive(true);
 
-        // Init FSM
+        if (IsMobilePlatform())
+        {
+            if (virtualJoystick != null)
+                virtualJoystick.gameObject.SetActive(true);
+        }
+        else
+        {
+            if (virtualJoystick != null)
+                virtualJoystick.gameObject.SetActive(false);
+        }
+
         StateMachine.ChangeState(new PlayerIdleState(this));
     }
+
 
 
     private void UpdateHunger(bool sprinting)
@@ -319,11 +352,7 @@ public class CCActor : MonoBehaviour
         if (isDead) return;
         if (isInParabola) return;
 
-        // Update input
-        if (virtualJoystick != null)
-            inputVec = virtualJoystick.GetAxis();
-        else if (moveAction != null)
-            inputVec = moveAction.action.ReadValue<Vector2>();
+        ReadMovementInput();
 
         // Camera-relative movement direction (unchanged above)
         Vector3 camF = Camera.main.transform.forward;

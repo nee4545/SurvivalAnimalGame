@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using Unity.VisualScripting;
 using UnityEngine;
 using UnityEngine.AI;
 using static CuteAnimalAI;
@@ -1077,23 +1078,6 @@ public class CuteAnimalAI : MonoBehaviour
         }
 
         return bestCompanion;
-    }
-
-    private Transform GetNearestCompanion(float radius)
-    {
-        int count = Physics.OverlapSphereNonAlloc(transform.position, radius, PerfBuffers.c32, WhatIsCompanion());
-        Transform best = null;
-        float bestDist = Mathf.Infinity;
-        for (int i = 0; i < count; i++)
-        {
-            var col = PerfBuffers.c32[i];
-            if (!col || !col.CompareTag("Companion")) continue;
-            var h = col.GetComponent<Health>();
-            if (h && h.IsDead) continue;
-            float d = Vector3.Distance(transform.position, col.transform.position);
-            if (d < bestDist) { bestDist = d; best = col.transform; }
-        }
-        return best;
     }
 
     public bool IsOnScreen(Transform t, float pad = 0.03f)
@@ -3194,7 +3178,10 @@ public class AIMigrateState : IState
     public void Enter()
     {
         ai.isMigratingMoving = true;
-        ai.agent.isStopped = false;
+        if(ai.agent.isOnNavMesh && ai.agent.enabled)
+        {
+            ai.agent.isStopped = false;
+        }
         ai.activeMigrationHerd = herd;
 
         if (!ai.isMigrationLeader && herd != null && herd.Leader != null)
@@ -3351,7 +3338,10 @@ public class AIMigrateRestState : IState
             return;
         }
 
-        ai.agent.isStopped = true;
+        if(ai.agent.enabled && ai.agent.isOnNavMesh)
+        {
+            ai.agent.isStopped = true;
+        }
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
 
         // ✅ Real-time end (not affected by Time.timeScale)
@@ -3391,7 +3381,10 @@ public class AIMigrateRestState : IState
 
             foreach (var member in herd.Memebers)
             {
-                member.agent.isStopped = false;
+                if(member.agent.isOnNavMesh && member.agent.enabled)
+                {
+                    member.agent.isStopped = false;
+                }
                 member.StateMachine.ChangeState(
                     new AIMigrateState(member, herd)
                 );
@@ -3421,7 +3414,10 @@ public class AIMigrateRestState : IState
 
     public void Exit()
     {
-        ai.agent.isStopped = false;
+        if (ai.agent.isOnNavMesh && ai.agent.enabled)
+        {
+            ai.agent.isStopped = false;
+        }
     }
 }
 
@@ -3717,7 +3713,10 @@ public class AIAttackState : IState
 
     public void Enter()
     {
-        ai.agent.ResetPath();
+        if(ai.agent.enabled && ai.agent.isOnNavMesh)
+        {
+            ai.agent.ResetPath();
+        }
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.ATTACK);
         timer = attackDuration;
 
@@ -3847,8 +3846,8 @@ public class AIFleeState : IState
 
         ai.agent.autoBraking = false;
         ai.agent.obstacleAvoidanceType = ObstacleAvoidanceType.NoObstacleAvoidance;
-        ai.agent.avoidancePriority = 20;         // higher priority to push through crowds (lower number = higher priority)
-        ai.agent.stoppingDistance = 0f;
+        //ai.agent.avoidancePriority = 20;         // higher priority to push through crowds (lower number = higher priority)
+        //ai.agent.stoppingDistance = 0f;
 
         lastPos = ai.transform.position;
         noProgressTimer = 0f;
@@ -4125,15 +4124,19 @@ public class AIWindupState : IState
 
 public class AIChargeState : IState
 {
-    private CuteAnimalAI ai;
+    private readonly CuteAnimalAI ai;
+
     private Vector3 chargeDirection;
     private float timer;
     private bool hasHitPlayer;
-    private int mask = 0;
 
+    private static readonly Collider[] _hitBuffer = new Collider[24];
     private HashSet<int> _hitIds;
 
-    private float overshootDistance => ai.chargeSpeed * ai.chargeDuration;
+    private float _hitCheckTimer;
+    private const float HitCheckInterval = 0.05f; // 20 Hz
+
+    private int _layerMask;
 
     public AIChargeState(CuteAnimalAI ai)
     {
@@ -4142,18 +4145,16 @@ public class AIChargeState : IState
 
     public void Enter()
     {
-         mask = LayerMask.GetMask("Enemy", "Companions", "Player");
+        _layerMask = LayerMask.GetMask("Enemy", "Companions", "Player");
         _hitIds = new HashSet<int>(16);
-        // Count attempt
-        ai.currentChargeAttempts++;
 
+        ai.currentChargeAttempts++;
         if (ai.currentChargeAttempts >= ai.maxChargeAttempts)
         {
             ai.isChargeCooldownActive = true;
             ai.chargeCooldownTimer = ai.chargeCooldownDuration;
         }
 
-        // Disable NavMesh movement completely
         ai.agent.ResetPath();
         ai.agent.enabled = false;
 
@@ -4161,9 +4162,10 @@ public class AIChargeState : IState
 
         timer = ai.chargeDuration;
         hasHitPlayer = false;
+        _hitCheckTimer = 0f;
 
-        // Lock charge direction ONCE
-        if (ai.player != null)
+        // Lock direction ONCE
+        if (ai.player)
             chargeDirection = (ai.player.position - ai.transform.position).Flat().normalized;
         else
             chargeDirection = ai.transform.forward.Flat().normalized;
@@ -4179,76 +4181,85 @@ public class AIChargeState : IState
         float dt = Time.deltaTime;
         timer -= dt;
 
-        // Move forward manually (unstoppable)
-        Vector3 delta = chargeDirection * ai.chargeSpeed * dt;
-        ai.transform.position += delta;
-
-        // Lock rotation
+        // Manual unstoppable movement
+        ai.transform.position += chargeDirection * ai.chargeSpeed * dt;
         ai.transform.rotation = Quaternion.LookRotation(chargeDirection);
 
-        // Detect everything in front
-        Collider[] hits = Physics.OverlapSphere(
-            ai.transform.position,
-            ai.chargeDamageRadius,
-            mask, QueryTriggerInteraction.Ignore
-        );
-
-        foreach (var hit in hits)
+        // Throttled collision checks
+        _hitCheckTimer -= dt;
+        if (_hitCheckTimer <= 0f)
         {
-            if (!hit) continue;
-
-            if (hit.transform == ai.transform)
-                continue;
-
-            // Player hit
-            if (!hasHitPlayer && hit.transform == ai.player)
-            {
-                if (hit.TryGetComponent<Health>(out var hp))
-                    hp.TakeDamage(ai.chargeDamage);
-
-                Vector3 knockDir = (ai.player.position - ai.transform.position).Flat().normalized;
-                ai.StartPlayerKnockback(knockDir);
-
-                hasHitPlayer = true;
-                continue;
-            }
-
-            // Other animals hit
-            if (hit.CompareTag("Animal"))
-            {
-                var otherAI = hit.GetComponent<CuteAnimalAI>();
-                if (!otherAI || otherAI == ai)
-                    continue;
-
-                int id = otherAI.GetInstanceID();
-                if (_hitIds != null && !_hitIds.Add(id))
-                    continue;
-
-                if (otherAI && otherAI != ai)
-                {
-                    Vector3 knockDir = (otherAI.transform.position - ai.transform.position).Flat().normalized;
-                    ai.StartAiKnockBack(otherAI.transform, knockDir);
-                }
-            }
+            _hitCheckTimer = HitCheckInterval;
+            DoCollisionCheck();
         }
 
-        // End charge purely by time
         if (timer <= 0f)
         {
             EndCharge();
         }
     }
 
+    private void DoCollisionCheck()
+    {
+        int hitCount = Physics.OverlapSphereNonAlloc(
+            ai.transform.position,
+            ai.chargeDamageRadius,
+            _hitBuffer,
+            _layerMask,
+            QueryTriggerInteraction.Ignore
+        );
+
+        for (int i = 0; i < hitCount; i++)
+        {
+            var hit = _hitBuffer[i];
+            if (!hit) continue;
+
+            Transform t = hit.transform;
+            if (t == ai.transform) continue;
+
+            // Player
+            if (!hasHitPlayer && t == ai.player)
+            {
+                if (t.TryGetComponent<Health>(out var hp))
+                    hp.TakeDamage(ai.chargeDamage);
+
+                Vector3 knockDir = (t.position - ai.transform.position).Flat().normalized;
+                ai.StartPlayerKnockback(knockDir);
+
+                hasHitPlayer = true;
+                continue;
+            }
+
+            // Other animals / companions
+            if (!hit.CompareTag("Animal") && !hit.CompareTag("Companion"))
+                continue;
+
+            var otherAI = hit.GetComponent<CuteAnimalAI>();
+            if (!otherAI || otherAI == ai)
+                continue;
+
+            int id = otherAI.GetInstanceID();
+            if (!_hitIds.Add(id))
+                continue;
+
+            Vector3 dir = (otherAI.transform.position - ai.transform.position).Flat().normalized;
+            ai.StartAiKnockBack(otherAI.transform, dir);
+        }
+    }
+
     private void EndCharge()
     {
-        // Re-enable NavMeshAgent
+        ai.StartCoroutine(ReenableAgentNextFrame());
+    }
+
+    private IEnumerator ReenableAgentNextFrame()
+    {
+        yield return null; // decouple from collision frame
+
         ai.agent.enabled = true;
 
-        // Snap safely back to NavMesh
         if (NavMesh.SamplePosition(ai.transform.position, out var hit, 3f, NavMesh.AllAreas))
-        {
             ai.agent.Warp(hit.position);
-        }
 
         bool canChain =
             !ai.isChargeCooldownActive &&
@@ -4257,22 +4268,18 @@ public class AIChargeState : IState
             Vector3.Distance(ai.transform.position, ai.player.position) <= ai.chargeDetectionRange;
 
         if (canChain)
-        {
             ai.StateMachine.ChangeState(new AIWindupState(ai));
-        }
         else
-        {
             ai.StateMachine.ChangeState(new AIReturnToBaseState(ai));
-        }
     }
 
     public void Exit()
     {
-        // Safety restore
         if (!ai.agent.enabled)
             ai.agent.enabled = true;
     }
 }
+
 
 
 
@@ -4712,6 +4719,7 @@ public class AIFleeThenHuntState : IState
             if (!threat || Vector3.Distance(ai.transform.position, threat.position) <= ai.detectionRange * 1.2f)
             {
                 ai.agent.obstacleAvoidanceType = ObstacleAvoidanceType.HighQualityObstacleAvoidance;
+                ai.wasProvoked = false;
                 ai.StateMachine.ChangeState(new AIChaseState(ai, threat)); // pass the target forward
                 return;
             }
