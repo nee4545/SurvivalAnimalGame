@@ -66,8 +66,31 @@ public class LootDropper : MonoBehaviour, IPoolable
         if (xpPrefab)
         {
             Vector3 xpPos = GetGroundPoint(origin);
-            var xp = PoolManager.Spawn(xpPrefab, xpPos, Quaternion.identity);
-            SetupPickup(xp, xpLifetime);
+            xpPos.y += 1f;
+            Vector3 rotation = new Vector3(-90,0,0);
+
+            int numDrops = Random.Range(5, 10);
+
+            for (int i = 0; i < numDrops; i++) 
+            {
+                var xp = PoolManager.Spawn(xpPrefab, xpPos, Quaternion.Euler(rotation));
+                SetupPickup(xp, xpLifetime);
+
+                Vector3 startPos = origin;
+
+                // Random direction and distance around the origin
+                float distance = Random.Range(0.5f, scatterRadius);
+                float angle = Random.Range(0f, Mathf.PI * 2f);
+                Vector3 dir = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
+
+                // Flat target position around the body
+                Vector3 flatTarget = origin + dir * distance;
+                Vector3 targetPos = GetGroundPoint(flatTarget);
+
+                CoroutineRunner.I.StartCoroutine(ParabolicDrop(xp, startPos, targetPos));
+                yield return null;
+            }
+
             // XP does not need an arc; it can just appear on ground
         }
 
@@ -179,6 +202,10 @@ public class LootDropper : MonoBehaviour, IPoolable
             {
                 yOffset = rend.bounds.extents.y;
             }
+        }
+        else if(obj.TryGetComponent<XPPickup>(out var xp))
+        {
+            yOffset = 0.5f;
         }
         else
         {

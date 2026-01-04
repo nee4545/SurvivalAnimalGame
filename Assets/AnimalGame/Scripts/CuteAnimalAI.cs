@@ -4073,7 +4073,10 @@ public class AIDeadState : IState
 
     public void Enter()
     {
-        ai.agent.isStopped = true;
+        if(ai.agent.enabled && ai.agent.isOnNavMesh)
+        {
+            ai.agent.isStopped = true;
+        }
         ai.animHandler?.SetAnimation(eCuteAnimalAnims.DIE);
         ai.Death();
     }
@@ -4081,6 +4084,7 @@ public class AIDeadState : IState
     public void Update() { }
     public void Exit() { }
 }
+
 
 #endregion
 

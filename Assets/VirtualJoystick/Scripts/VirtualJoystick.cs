@@ -34,6 +34,10 @@ namespace Terresquall
         [Tooltip("How far below the vertical center of the screen (in pixels) the joystick should sit.")]
         public float defaultYOffset = 250f;   // tweak as you like
 
+        [Header("Vertical Clamp (Screen Space)")]
+        [SerializeField] private float minScreenY = 150f;
+        [SerializeField] private float maxScreenY = 450f;
+
         private Vector3 defaultRootPosition;
 
         public static InputMode GetInputMode()
@@ -56,7 +60,7 @@ namespace Terresquall
         [Tooltip("Colour of the control stick while it is being dragged.")]
         public Color dragColor = new Color(0.9f, 0.9f, 0.9f, 1f);
 
-        [Tooltip("How responsive the control stick is to dragging.")]
+        [Tooltip("How responsive the control stick is to draFgging.")]
         public float sensitivity = 2f;
         [Tooltip("How far you can drag the control stick away from the joystick's centre.")]
         [Range(0, 2)] public float radius = 0.7f;
@@ -344,8 +348,17 @@ namespace Terresquall
             if (bg) bg.enabled = false;
         }
 
+        public void SetJoystickActive(bool isActive)
+        {
+            if (!Application.isMobilePlatform)
+                return;
+
+            gameObject.SetActive(isActive);
+        }
+
         protected void SetPosition(Vector2 screenPosition)
         {
+
             Vector2 position;
 
             if (rootCanvas.renderMode == RenderMode.ScreenSpaceOverlay)
@@ -435,8 +448,28 @@ namespace Terresquall
             }
 
             UpdateDefaultRootPosition();
-            transform.position = defaultRootPosition;
 
+            Vector2 defaultScreenPos = RectTransformUtility.WorldToScreenPoint(
+                rootCanvas.worldCamera,
+                defaultRootPosition
+            );
+
+            defaultScreenPos = ClampScreenPosition(defaultScreenPos);
+
+            Vector3 worldPoint;
+            if (RectTransformUtility.ScreenPointToWorldPointInRectangle(
+                rootCanvas.transform as RectTransform,
+                defaultScreenPos,
+                rootCanvas.worldCamera,
+                out worldPoint
+            ))
+            {
+                transform.position = worldPoint;
+            }
+            else
+            {
+                transform.position = defaultRootPosition;
+            }
 
             origin = desiredPosition = transform.position;
             StartCoroutine(Activate());
@@ -507,6 +540,14 @@ namespace Terresquall
             }
             return false; // not over joystick
         }
+
+        Vector2 ClampScreenPosition(Vector2 screenPos)
+        {
+            screenPos.y = Mathf.Clamp(screenPos.y, minScreenY, maxScreenY);
+            return screenPos;
+        }
+
+
 
         void CheckForDrag()
         {
@@ -603,17 +644,19 @@ namespace Terresquall
             // If not forcing and the move is tiny, ignore (legacy behavior)
             if (!force && Vector2.Distance(transform.position, newPos) < GetRadius()) return;
 
+            Vector2 clampedScreenPos = ClampScreenPosition(newPos);
+
             Vector2 position;
             if (rootCanvas.renderMode == RenderMode.ScreenSpaceOverlay)
             {
-                position = newPos;
+                position = clampedScreenPos;
             }
             else
             {
                 Vector3 worldPoint;
                 if (RectTransformUtility.ScreenPointToWorldPointInRectangle(
                     rootCanvas.transform as RectTransform,
-                    newPos,
+                    clampedScreenPos,
                     rootCanvas.worldCamera,
                     out worldPoint
                 ))
@@ -622,9 +665,10 @@ namespace Terresquall
                 }
                 else
                 {
-                    position = newPos;
+                    position = clampedScreenPos;
                 }
             }
+
 
             transform.position = position;
             desiredPosition = position;
