@@ -1,7 +1,7 @@
-using UnityEngine;
+﻿using UnityEngine;
 using DG.Tweening;
 
-public class RockTweenReaction : MonoBehaviour
+public class RockTweenReaction : FoliageReactableBase
 {
     [Header("Movement")]
     public float pushDistance = 0.4f;
@@ -25,19 +25,20 @@ public class RockTweenReaction : MonoBehaviour
         startRot = transform.rotation;
     }
 
-    void OnTriggerEnter(Collider other)
+    // 🔹 Called by PlayerFoliageScanner
+    public override void React(Vector3 playerPos)
     {
         if (isAnimating) return;
-        //if (!other.CompareTag("Player")) return;
 
-        React(other.transform.position);
-    }
-
-    void React(Vector3 playerPos)
-    {
         isAnimating = true;
 
-        Vector3 dir = (transform.position - playerPos).normalized;
+        Vector3 dir = (transform.position - playerPos);
+        dir.y = 0f;
+        if (dir.sqrMagnitude < 0.001f)
+            dir = Random.insideUnitSphere;
+
+        dir.Normalize();
+
         Vector3 pushPos = startPos + dir * pushDistance;
 
         transform.DOKill();
@@ -47,7 +48,8 @@ public class RockTweenReaction : MonoBehaviour
         // Push + hop
         seq.Append(transform.DOMoveX(pushPos.x, pushDuration).SetEase(Ease.OutQuad));
         seq.Join(transform.DOMoveZ(pushPos.z, pushDuration).SetEase(Ease.OutQuad));
-        seq.Join(transform.DOMoveY(startPos.y + hopHeight, pushDuration * 0.5f).SetEase(Ease.OutQuad));
+        seq.Join(transform.DOMoveY(startPos.y + hopHeight, pushDuration * 0.5f)
+            .SetEase(Ease.OutQuad));
 
         // Rotate slightly
         seq.Join(transform.DORotate(

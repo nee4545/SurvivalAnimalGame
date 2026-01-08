@@ -68,13 +68,19 @@ public class CuteAnimalAnimHandler : MonoBehaviour
     bool isLocked = false;
     eCuteAnimalAnims currentAnimState = eCuteAnimalAnims.NONE;
 
-    void Start()
+
+    private void Awake()
     {
         if (animator == null)
             animator = GetComponent<Animator>();
 
         if (animator == null)
             animator = GetComponentInChildren<Animator>();
+    }
+
+    void Start()
+    {
+       
 
         if (isPolyPerfectAnimal)
         {
