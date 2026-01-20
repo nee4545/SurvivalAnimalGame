@@ -42,8 +42,8 @@ public class EnemyPoolReset : MonoBehaviour, IPoolable
             switch (ai.aiType)
             {
                 case CuteAnimalAI.AIType.AggressiveJumping: ai.StateMachine.ChangeState(new AIPerchRestState(ai)); break;
-                case CuteAnimalAI.AIType.Companion: ai.StateMachine.ChangeState(new AICompanionFollowState(ai)); break;
-                default: ai.StateMachine.ChangeState(new AIWanderState(ai)); break;
+                case CuteAnimalAI.AIType.Companion: ai.StateMachine.ChangeState(ai._companionFollow); break;
+                default: ai.StateMachine.ChangeState(ai._wanderState); break;
             }
 
             ai.spawnPosition = transform.position; // treat spawn point as new home

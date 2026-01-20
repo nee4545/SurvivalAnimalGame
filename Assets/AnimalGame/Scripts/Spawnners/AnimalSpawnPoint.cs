@@ -31,6 +31,26 @@ public class AnimalSpawnPoint : MonoBehaviour
     [Header("Player Separation (optional override)")]
     [Tooltip("If >= 0, overrides the spawner’s minDistanceFromPlayer for this point.")]
     public float minDistanceFromPlayer = -1f;
+    [Header("PassiveType2 (Optional)")]
+    public bool isPassiveType2 = false;
+
+    [Tooltip("Guardians (Aggressive prefabs) that protect PassiveType2 kids.")]
+    public List<WeightedPrefab> guardianPrefabs = new();
+
+    [Tooltip("How many guardians to maintain alive for this spawn point.")]
+    public int guardianCount = 2;
+
+    [Header("Guardian Spawn Zone (Yellow Gizmo)")]
+    public SpawnShape guardianShape = SpawnShape.Circle;
+
+    [Tooltip("For Circle: X or Z used as radius. For Box: half-extents.")]
+    public Vector3 guardianSize = new Vector3(6f, 0f, 6f);
+
+    [Tooltip("Optional local offset for guardian zone.")]
+    public Vector3 guardianLocalOffset = Vector3.zero;
+
+    // runtime tracking
+    readonly List<GameObject> _aliveGuardians = new();
 
     // ── NEW: self-spawning options ──────────────────────────────────────────────
     [Header("Self-Spawning (optional)")]
@@ -60,6 +80,8 @@ public class AnimalSpawnPoint : MonoBehaviour
     AnimalSpawner _parent;
     readonly List<GameObject> _alive = new();
     float _timer;
+    private readonly List<CuteAnimalAI> _spawnedGuardians = new();
+
 
     // ——— Gizmos (unchanged) ———
     void OnDrawGizmos()
@@ -85,6 +107,104 @@ public class AnimalSpawnPoint : MonoBehaviour
             Gizmos.DrawCube(Vector3.zero, size * 2f);
             Gizmos.matrix = Matrix4x4.identity;
         }
+
+        if (isPassiveType2)
+        {
+            Gizmos.color = new Color(1f, 0.9f, 0.2f, 0.35f); // yellow
+            Vector3 c = transform.TransformPoint(guardianLocalOffset);
+
+            if (guardianShape == SpawnShape.Circle)
+            {
+                float r = Mathf.Max(guardianSize.x, guardianSize.z);
+                const int segs = 36;
+                Vector3 prev = c + transform.right * r;
+                for (int i = 1; i <= segs; i++)
+                {
+                    float ang = (i / (float)segs) * Mathf.PI * 2f;
+                    Vector3 next = c + (new Vector3(Mathf.Cos(ang), 0f, Mathf.Sin(ang)) * r);
+                    Gizmos.DrawLine(prev, next);
+                    prev = next;
+                }
+            }
+            else
+            {
+                Gizmos.matrix = Matrix4x4.TRS(c, transform.rotation, Vector3.one);
+                Gizmos.DrawCube(Vector3.zero, guardianSize * 2f);
+                Gizmos.matrix = Matrix4x4.identity;
+            }
+        }
+    }
+
+    GameObject PickGuardianPrefab()
+    {
+        return PickWeightedPrefab(guardianPrefabs);
+    }
+
+    bool TryGetGuardianSpawnPosition(out Vector3 pos)
+    {
+        // same pattern as TryGetSpawnPosition but using guardian zone settings
+        pos = transform.TransformPoint(guardianLocalOffset);
+
+        Vector3 local;
+        if (guardianShape == SpawnShape.Circle)
+        {
+            float r = Mathf.Max(guardianSize.x, guardianSize.z);
+            var flat = Random.insideUnitCircle * r;
+            local = new Vector3(flat.x, 0f, flat.y);
+        }
+        else
+        {
+            local = new Vector3(
+                Random.Range(-guardianSize.x, guardianSize.x),
+                Random.Range(-guardianSize.y, guardianSize.y),
+                Random.Range(-guardianSize.z, guardianSize.z));
+        }
+
+        pos = transform.TransformPoint(guardianLocalOffset + local);
+
+        bool placeOnNav = _parent ? _parent.placeOnNavMesh : true;
+        float nmRadius = _parent ? _parent.navmeshSearchRadius : 5f;
+
+        if (placeOnNav)
+        {
+            if (NavMesh.SamplePosition(pos, out var hit, nmRadius, NavMesh.AllAreas))
+            {
+                pos = hit.position;
+                return true;
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    void EnsureGuardians()
+    {
+        _aliveGuardians.RemoveAll(g => !g || !g.activeInHierarchy);
+
+        int need = Mathf.Max(0, guardianCount) - _aliveGuardians.Count;
+        for (int i = 0; i < need; i++)
+        {
+            var gPrefab = PickGuardianPrefab();
+            if (!gPrefab) return;
+
+            if (!TryGetGuardianSpawnPosition(out var gPos)) return;
+
+            Quaternion gRot = Quaternion.Euler(0f, Random.Range(0f, 360f), 0f);
+
+            Transform parentT = spawnParentOverride;
+            if (_parent && _parent.spawnParent) parentT = _parent.spawnParent;
+
+            var g = PoolManager.Spawn(gPrefab, gPos, gRot, parentT);
+            if (g) _aliveGuardians.Add(g);
+        }
+    }
+
+    Transform PickRandomGuardianTransform()
+    {
+        _aliveGuardians.RemoveAll(g => !g || !g.activeInHierarchy);
+        if (_aliveGuardians.Count == 0) return null;
+        return _aliveGuardians[Random.Range(0, _aliveGuardians.Count)].transform;
     }
 
     void Awake()
@@ -108,6 +228,14 @@ public class AnimalSpawnPoint : MonoBehaviour
             if (!w.prefab || warmed.Contains(w.prefab)) continue;
             PoolManager.Warmup(w.prefab, pointWarmupCount);
             warmed.Add(w.prefab);
+        }
+
+        HashSet<GameObject> warmedGuardians = new();
+        foreach (var w in guardianPrefabs)
+        {
+            if (!w.prefab || warmedGuardians.Contains(w.prefab)) continue;
+            PoolManager.Warmup(w.prefab, pointWarmupCount);
+            warmedGuardians.Add(w.prefab);
         }
 
         // ensure we have a parent if none set and no parent spawner
@@ -140,12 +268,22 @@ public class AnimalSpawnPoint : MonoBehaviour
         if (_timer > 0f) return;
         _timer = pointSpawnInterval;
 
-        // try one spawn per tick until we reach cap
         TrySpawnOne();
     }
 
+
+        
+
+
+
     void TrySpawnOne()
     {
+
+        if (isPassiveType2)
+        {
+            EnsureGuardians();
+        }
+
         // pick prefab (respect parent aggressive cap if asked)
         GameObject prefab = respectAggressiveCapFromParent
             ? PickWeightedPrefabRespectingParentCap(prefabs)
@@ -162,6 +300,7 @@ public class AnimalSpawnPoint : MonoBehaviour
         // parent to parent spawner’s spawnParent if available → else our override
         Transform parentT = spawnParentOverride;
         if (_parent && _parent.spawnParent) parentT = _parent.spawnParent;
+
 
         var go = PoolManager.Spawn(prefab, pos, rot, parentT);
         if (go)
@@ -191,6 +330,12 @@ public class AnimalSpawnPoint : MonoBehaviour
                 var herd = GetComponent<MigrationHerd>();
                 if (!herd) herd = gameObject.AddComponent<MigrationHerd>();
                 herd.Register(ai);
+            }
+
+            if (ai && isPassiveType2 && ai.aiType == CuteAnimalAI.AIType.PassiveType2)
+            {
+                var guardianT = PickRandomGuardianTransform();
+                ai.guardian = guardianT;
             }
         }
     }
