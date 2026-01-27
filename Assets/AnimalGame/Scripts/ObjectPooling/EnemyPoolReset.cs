@@ -41,7 +41,7 @@ public class EnemyPoolReset : MonoBehaviour, IPoolable
             // pick a sensible starting state
             switch (ai.aiType)
             {
-                case CuteAnimalAI.AIType.AggressiveJumping: ai.StateMachine.ChangeState(new AIPerchRestState(ai)); break;
+                case CuteAnimalAI.AIType.AggressiveJumping: ai.StateMachine.ChangeState(ai._perchRestState); break;
                 case CuteAnimalAI.AIType.Companion: ai.StateMachine.ChangeState(ai._companionFollow); break;
                 default: ai.StateMachine.ChangeState(ai._wanderState); break;
             }

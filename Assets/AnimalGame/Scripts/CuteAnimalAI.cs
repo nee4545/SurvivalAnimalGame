@@ -641,6 +641,9 @@ public class CuteAnimalAI : MonoBehaviour
     public CompanionChaseState _companionChase;
     public CompanionAttackState _companionAttackState;
     public AIFollowGuardianState _followGuardianState;
+    public AIPerchRestState _perchRestState;
+    public AIJumpAttackState _jumpAttackState;
+    public AIJumpReturnHomeState _jumpReturnHomeState;
 
     private bool IsValidTarget(Transform t)
     {
@@ -1534,6 +1537,9 @@ public class CuteAnimalAI : MonoBehaviour
         _companionChase =new CompanionChaseState(this, null);
         _companionAttackState = new CompanionAttackState(this, null);
         _followGuardianState = new AIFollowGuardianState(this);
+        _perchRestState = new AIPerchRestState(this);
+        _jumpAttackState = new AIJumpAttackState(this);
+        _jumpReturnHomeState = new AIJumpReturnHomeState(this);
 
 
         lodNearSq = lodNear * lodNear;
@@ -1882,7 +1888,7 @@ public class CuteAnimalAI : MonoBehaviour
         if (aiType == AIType.Companion)
             StateMachine.ChangeState(_companionFollow);
         else if (aiType == AIType.AggressiveJumping)
-            StateMachine.ChangeState(new AIPerchRestState(this));  // perched until triggered
+            StateMachine.ChangeState(_perchRestState);  // perched until triggered
         else
             ChangeStateToWander();
     }
@@ -2282,7 +2288,7 @@ public class CuteAnimalAI : MonoBehaviour
         case AIType.AggressiveJumping:
             if (!jumpSessionActive && dist <= detectionRange && Time.time >= nextPerchEngageTime)
             {
-                StateMachine.ChangeState(new AIJumpAttackState(this));
+                StateMachine.ChangeState(_jumpAttackState);
                 return true;
             }
             break;
@@ -2421,7 +2427,7 @@ public class CuteAnimalAI : MonoBehaviour
             var s = StateMachine.CurrentState;
             if (!(s is AIJumpReturnHomeState) && !(s is AIPerchRestState))
             {
-                StateMachine.ChangeState(new AIJumpReturnHomeState(this));
+                StateMachine.ChangeState(_jumpReturnHomeState);
                 return;
             }
         }
@@ -5823,11 +5829,14 @@ public class AIJumpAttackState : IState
                 ai.agent.Warp(snap.position);
 
             yield return null; // <-- important: wait a frame after Warp
+
+            ai.agent.enabled = true;
+            ai.agent.isStopped = false;
         }
 
         if (!ai.agent.enabled || !ai.agent.isOnNavMesh)
         {
-            ai.StateMachine.ChangeState(new AIJumpReturnHomeState(ai));
+            ai.StateMachine.ChangeState(ai._jumpReturnHomeState);
             yield break;
         }
 
@@ -5872,7 +5881,7 @@ public class AIJumpAttackState : IState
             yield return null;
         }
 
-        ai.StateMachine.ChangeState(new AIJumpReturnHomeState(ai));
+        ai.StateMachine.ChangeState(ai._jumpReturnHomeState);
     }
 
 
@@ -5887,6 +5896,8 @@ public class AIJumpAttackState : IState
 public class AIJumpReturnHomeState : IState
 {
     private readonly CuteAnimalAI ai;
+    private bool isJumping;
+    private Coroutine jumpRoutine;
 
     public AIJumpReturnHomeState(CuteAnimalAI ai)
     {
@@ -5909,6 +5920,19 @@ public class AIJumpReturnHomeState : IState
 
     public void Update()
     {
+
+        if (ai.agent.enabled &&
+    !ai.agent.pathPending &&
+    ai.agent.remainingDistance <= ai.jumpReturnApproachDistance)
+        {
+            isJumping = true;
+            jumpRoutine = ai.StartCoroutine(JumpUpThenRest());
+            return;
+        }
+
+        if (isJumping)
+            return;
+
         if (!ai.currentJumpSpot)
         {
             //ai.ChangeStateToIdle();
@@ -5924,14 +5948,23 @@ public class AIJumpReturnHomeState : IState
         if (dist > ai.jumpReturnApproachDistance)
             return;
 
-        // Stop agent before jump
-       // ai.agent.isStopped = true;
+        isJumping = true;
 
-        ai.StartCoroutine(JumpUpThenRest());
+        if (jumpRoutine != null)
+            ai.StopCoroutine(jumpRoutine);
+
+        jumpRoutine = ai.StartCoroutine(JumpUpThenRest());
     }
 
     private IEnumerator JumpUpThenRest()
     {
+        // 🔴 CRITICAL: stop NavMeshAgent before manual motion
+        if (ai.agent.enabled)
+        {
+            ai.agent.isStopped = true;
+            ai.agent.enabled = false;
+        }
+
         Vector3 from = ai.transform.position;
         Vector3 to = ai.jumpAnchorPosition;
 
@@ -5946,11 +5979,21 @@ public class AIJumpReturnHomeState : IState
             )
         );
 
-        ai.StateMachine.ChangeState(new AIPerchRestState(ai));
+        isJumping = false;
+
+        ai.StateMachine.ChangeState(ai._perchRestState);
     }
+
 
     public void Exit()
     {
+        isJumping = false;
+
+        if (jumpRoutine != null)
+            ai.StopCoroutine(jumpRoutine);
+
+        jumpRoutine = null;
+
         if (ai.agent.enabled)
             ai.agent.isStopped = false;
     }
@@ -5989,7 +6032,7 @@ public class AIPerchRestState : IState
         // Only trigger jump attack if player is close enough
         if (dist <= ai.detectionRange && !ai.jumpSessionActive)
         {
-            ai.StateMachine.ChangeState(new AIJumpAttackState(ai));
+            ai.StateMachine.ChangeState(ai._jumpAttackState);
             return;
         }
     }
