@@ -4,6 +4,46 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using Terresquall;
 
+
+public enum PlayerStatType
+{
+    MoveSpeed,
+    StaminaDrainRate,
+    HungerDrainRate,
+    MaxHealth,
+    AttackDamage,
+    CompnionLimit,
+}
+
+[System.Serializable]
+public class PlayerStat
+{
+    public PlayerStatType type;
+
+    public float baseValue;
+    public float perLevelIncrease;
+    public int level;
+    public int maxLevel = 10;
+
+    public float CurrentValue =>
+        baseValue + level * perLevelIncrease;
+
+    public float NextValue =>
+        level < maxLevel
+            ? baseValue + (level + 1) * perLevelIncrease
+            : CurrentValue;
+
+    public bool CanUpgrade => level < maxLevel;
+
+    public void Upgrade()
+    {
+        if (CanUpgrade)
+            level++;
+    }
+}
+
+
+
 #region CCActor WITH FSM
 
 [RequireComponent(typeof(CharacterController))]
@@ -55,6 +95,22 @@ public class CCActor : MonoBehaviour
     public float autoAttackRadius = 2f;
     public float autoAttackCooldown = 2f;
     public LayerMask enemyLayer;
+
+    [Header("Attack Sector (Runtime)")]
+    public LineRenderer attackSector;
+    public bool showAttackSectorRuntime = true;
+    public int sectorSegments = 28;
+    public Color sectorColor = new Color(1f, 0.3f, 0.3f, 0.9f);
+    public float sectorYOffset = 0.05f;
+
+    [Header("Attack Target Arrow")]
+    public GameObject targetArrowPrefab;
+    public bool showAttackArrow = true;
+    public float arrowHeight = 1.2f;
+    public float arrowTravelCurve = 1.0f;
+
+    private GameObject _activeArrow;
+    private float _arrowT;
 
     [HideInInspector] public float autoAttackTimer;
     [HideInInspector] public float attackTimer;
@@ -124,6 +180,9 @@ public class CCActor : MonoBehaviour
     [Tooltip("Pause hunger drain (e.g., cutscenes).")]
     public bool pauseHungerDrain = false;
 
+    [Header("Upgradeable Stats")]
+    public List<PlayerStat> stats = new();
+
     [HideInInspector] public float hunger;   // current hunger (0..maxHunger)
     public float Hunger01 => (maxHunger <= 0f) ? 0f : Mathf.Clamp01(hunger / maxHunger);
 
@@ -132,6 +191,8 @@ public class CCActor : MonoBehaviour
     [HideInInspector] public Health health;  // player health reference
 
     public bool isInParabola = false;
+
+    public int companionLimit = 1;
 
 
 
@@ -149,6 +210,92 @@ public class CCActor : MonoBehaviour
 
     struct GroundInfo { public bool grounded; public Vector3 normal; public float angleDeg; }
     GroundInfo _ground;
+
+
+    void UpdateAttackSectorRuntime()
+    {
+        if (!showAttackSectorRuntime || !requireFacing || attackSector == null)
+        {
+            if (attackSector != null)
+                attackSector.enabled = false;
+            return;
+        }
+
+        attackSector.enabled = true;
+        attackSector.startColor = sectorColor;
+        attackSector.endColor = sectorColor;
+
+        float radius = attackRange;
+        float halfAngle = requiredFacingAngle;
+        Vector3 origin = transform.position + Vector3.up * sectorYOffset;
+        Vector3 forward = transform.forward;
+
+        int pointCount = sectorSegments + 2; // center + arc
+        attackSector.positionCount = pointCount;
+
+        // Center
+        attackSector.SetPosition(0, origin);
+
+        for (int i = 0; i <= sectorSegments; i++)
+        {
+            float t = (float)i / sectorSegments;
+            float angle = Mathf.Lerp(-halfAngle, halfAngle, t);
+            Vector3 dir = Quaternion.AngleAxis(angle, Vector3.up) * forward;
+            attackSector.SetPosition(i + 1, origin + dir * radius);
+        }
+    }
+
+
+    void UpdateTargetArrow()
+    {
+        if (!isAttackingLoop || currentTarget == null)
+        {
+            ResetArrow();
+            return;
+        }
+
+        if (_activeArrow == null && targetArrowPrefab != null)
+        {
+            _activeArrow = Instantiate(targetArrowPrefab);
+            _arrowT = 0f;
+        }
+
+        if (_activeArrow == null) return;
+
+        // Progress synced to attack rate
+        _arrowT += Time.deltaTime / autoAttackCooldown;
+        _arrowT = Mathf.Clamp01(_arrowT);
+
+        Vector3 start =
+            transform.position +
+            transform.forward * 0.6f +
+            Vector3.up * arrowHeight;
+
+        Vector3 end =
+            currentTarget.position +
+            Vector3.up * arrowHeight;
+
+        // Curved motion (arc)
+        Vector3 mid = Vector3.Lerp(start, end, 0.5f);
+        mid.y += arrowTravelCurve;
+
+        Vector3 p1 = Vector3.Lerp(start, mid, _arrowT);
+        Vector3 p2 = Vector3.Lerp(mid, end, _arrowT);
+        Vector3 pos = Vector3.Lerp(p1, p2, _arrowT);
+
+        _activeArrow.transform.position = pos;
+        _activeArrow.transform.LookAt(end);
+    }
+
+    void ResetArrow()
+    {
+        if (_activeArrow != null)
+            Destroy(_activeArrow);
+
+        _activeArrow = null;
+        _arrowT = 0f;
+    }
+
 
     void GroundCheck()
     {
@@ -229,6 +376,8 @@ public class CCActor : MonoBehaviour
         hunger = Mathf.Clamp(maxHunger, 0f, Mathf.Max(0.0001f, maxHunger)); // start full if enabled
         _starveDamageAccum = 0f;
 
+        InitializeStats();
+
     }
 
 
@@ -246,6 +395,94 @@ public class CCActor : MonoBehaviour
         }
     }
 
+
+    void InitializeStats()
+    {
+        stats = new List<PlayerStat>
+        {
+            new PlayerStat {
+                type = PlayerStatType.MoveSpeed,
+                baseValue = walkSpeed,
+                perLevelIncrease = 0.3f
+            },
+            new PlayerStat {
+                type = PlayerStatType.StaminaDrainRate,
+                baseValue = runDrainPerSecond,
+                perLevelIncrease = -1.5f   // drain improves downward
+            },
+            new PlayerStat {
+                type = PlayerStatType.HungerDrainRate,
+                baseValue = hungerDrainPerSecond,
+                perLevelIncrease = -0.3f
+            },
+            new PlayerStat {
+                type = PlayerStatType.MaxHealth,
+                baseValue = health.maxHealth,
+                perLevelIncrease = 10f
+            },
+            new PlayerStat {
+                type = PlayerStatType.AttackDamage,
+                baseValue = attackDamage,
+                perLevelIncrease = 3f
+            },
+             new PlayerStat {
+                type = PlayerStatType.CompnionLimit,
+                baseValue = companionLimit,
+                perLevelIncrease = 1f
+            }
+        };
+
+            ApplyStats();
+    }
+
+    public void ApplyStats()
+    {
+        foreach (var stat in stats)
+        {
+            switch (stat.type)
+            {
+                case PlayerStatType.MoveSpeed:
+                    walkSpeed = stat.CurrentValue;
+                    runSpeed = stat.CurrentValue * 2f;
+                    break;
+
+                case PlayerStatType.StaminaDrainRate:
+                    runDrainPerSecond = stat.CurrentValue;
+                    break;
+
+                case PlayerStatType.HungerDrainRate:
+                    hungerDrainPerSecond = stat.CurrentValue;
+                    break;
+
+                case PlayerStatType.MaxHealth:
+                    health.SetMaxHealth((int)stat.CurrentValue);
+                    break;
+
+                case PlayerStatType.AttackDamage:
+                    attackDamage = Mathf.RoundToInt(stat.CurrentValue);
+                    break;
+                case PlayerStatType.CompnionLimit:
+                    companionLimit = Mathf.RoundToInt(stat.CurrentValue);
+                    break;
+            }
+        }
+    }
+
+    public bool UpgradeStat(PlayerStatType type)
+    {
+        var stat = stats.Find(s => s.type == type);
+        if (stat == null || !stat.CanUpgrade)
+            return false;
+
+        stat.Upgrade();
+        ApplyStats();
+        return true;
+    }
+
+    public PlayerStat GetStat(PlayerStatType type)
+    {
+        return stats.Find(s => s.type == type);
+    }
 
     void Start()
     {
@@ -402,6 +639,15 @@ public class CCActor : MonoBehaviour
 
         AutoAttackLoop();
 
+        if(showAttackSectorRuntime)
+        {
+            UpdateAttackSectorRuntime();
+        }
+        if(showAttackArrow) 
+        {
+            UpdateTargetArrow();
+        }
+
         // choose locomotion anim ONLY if not attacking
         UpdateLocomotionAnimation();
     }
@@ -447,6 +693,7 @@ public class CCActor : MonoBehaviour
                             // if (requireFacing && !IsFacing(h.transform)) continue;
 
                             eh.TakeDamage(attackDamage);
+                            _arrowT = 0f;
 
                             if (h.TryGetComponent<CuteAnimalAI>(out var ai))
                             {

@@ -7,10 +7,27 @@ public class InGameUIManager : MonoBehaviour
     [SerializeField] private GameObject statsUIObject;
     [SerializeField] private Terresquall.VirtualJoystick virtualJoystick;
 
+    private bool statCardsBound = false;
+
     private void Awake()
     {
         // Ensure clean start state
         CloseAll();
+    }
+
+    private void BindAllStatCards()
+    {
+        var player = FindObjectOfType<CCActor>();
+
+        if(statsUIObject != null) 
+        {
+            var statCards = statsUIObject.GetComponentsInChildren<UIStatCard>();
+
+            foreach(UIStatCard statCard in statCards)
+            {
+                statCard.Bind(player);
+            }
+        }
     }
 
     // ---------- Public API (Button Hooks) ----------
@@ -26,6 +43,11 @@ public class InGameUIManager : MonoBehaviour
     {
         CloseAll();
         statsUIObject.SetActive(true);
+        if(!statCardsBound)
+        {
+            BindAllStatCards();
+            statCardsBound = true;
+        }
         SetJoystick(false);
     }
 

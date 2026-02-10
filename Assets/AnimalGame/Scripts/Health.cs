@@ -60,6 +60,12 @@ public class Health : MonoBehaviour
         onHealthChanged?.Invoke(currentHealth, maxHealth);
     }
 
+    public void SetMaxHealth(int maxHealth)
+    {
+        this.maxHealth = maxHealth;
+        ResetHealth();
+    }
+
     /// <summary>Revive to a specific HP (defaults to full).</summary>
     public void Revive(float hp = -1f)
     {
