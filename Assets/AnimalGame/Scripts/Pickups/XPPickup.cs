@@ -7,10 +7,11 @@ public class XPPickup : PickupBase
     public float pulseSpeed = 5f;
     public float pulseScale = 1.15f;
 
-
     protected override bool TryCollect(CCActor player)
     {
-        // TODO: Hook your XP system later, e.g. player.AddXP(xpAmount);
+        if (!player) return false;
+
+        player.AddXP(xpAmount);
         return true;
     }
 }

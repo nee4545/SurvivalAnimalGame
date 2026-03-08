@@ -25,6 +25,18 @@ public class UISpriteFeedbackAnimator : MonoBehaviour
     // Public API (call these)
     // -------------------------
 
+    public void SetEnabledIdle()
+    {
+        if (targetImage != null && enabledIdleSprite != null)
+            targetImage.sprite = enabledIdleSprite;
+    }
+
+    public void SetDisabledIdle()
+    {
+        if (targetImage != null && disabledIdleSprite != null)
+            targetImage.sprite = disabledIdleSprite;
+    }
+
     public void PlayEnabledFeedback()
     {
         if (enabledAnimation.Count == 0 || targetImage == null)

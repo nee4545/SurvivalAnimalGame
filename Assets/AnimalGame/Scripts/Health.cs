@@ -12,6 +12,8 @@ public class Health : MonoBehaviour
     // Backing
     private float currentHealth;
 
+    public bool isPlayerhealth = false;
+
     [Header("Events")]
     public UnityEvent onDeath;
     public UnityEvent<float> onDamageTaken;        // emits damage amount
@@ -44,6 +46,9 @@ public class Health : MonoBehaviour
         onDamageTaken?.Invoke(damage);
         Damaged?.Invoke(transform, attacker);
         onHealthChanged?.Invoke(currentHealth, maxHealth);
+
+        if(!isPlayerhealth)
+            DamagePopupSpawner.Instance?.ShowPopup(transform.position + Vector3.up * 1.5f, (int)damage);
 
         if (currentHealth <= 0f && !IsDead)
         {

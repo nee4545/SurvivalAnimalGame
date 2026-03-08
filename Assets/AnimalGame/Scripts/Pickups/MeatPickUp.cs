@@ -3,7 +3,11 @@ using UnityEngine;
 public class MeatPickup : PickupBase
 {
     [Header("Meat")]
+    public int meatAmount = 1;
     public float hungerRestore = 20f;
+    public float healthRestore = 2f;
+    public bool restoreStatsOnCollect = true;
+
     public bool spin = true;
     public float spinSpeed = 180f;
 
@@ -16,7 +20,15 @@ public class MeatPickup : PickupBase
     protected override bool TryCollect(CCActor player)
     {
         if (!player) return false;
-        float added = player.AddHunger(hungerRestore);
-        return added > 0.01f;
+
+        player.AddMeat(meatAmount);
+
+        if (restoreStatsOnCollect)
+        {
+            player.AddHunger(hungerRestore);
+            player.AddHealth(healthRestore);
+        }
+
+        return true;
     }
 }

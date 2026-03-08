@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using Terresquall;
-
+using System;
 
 public enum PlayerStatType
 {
@@ -211,6 +211,126 @@ public class CCActor : MonoBehaviour
     struct GroundInfo { public bool grounded; public Vector3 normal; public float angleDeg; }
     GroundInfo _ground;
 
+    [Header("Progression")]
+    public int playerLevel = 1;
+    public int currentXP = 0;
+    public int baseXPToNextLevel = 50;
+    public float xpGrowthMultiplier = 1.25f;
+    public float levelScaleIncrease = 0.2f;
+    public ParticleSystem levelupvfx;
+
+    [Header("Economy")]
+    public int storedMeat = 0;
+
+    public event Action OnProgressChanged;
+
+
+    public int XPToNextLevel
+    {
+        get
+        {
+            return Mathf.RoundToInt(baseXPToNextLevel * Mathf.Pow(xpGrowthMultiplier, playerLevel - 1));
+        }
+    }
+
+    public float XPProgress01
+    {
+        get
+        {
+            int needed = XPToNextLevel;
+            if (needed <= 0) return 0f;
+            return Mathf.Clamp01((float)currentXP / needed);
+        }
+    }
+
+    public void AddXP(int amount)
+    {
+        if (amount <= 0) return;
+
+        currentXP += amount;
+
+        while (currentXP >= XPToNextLevel)
+        {
+            currentXP -= XPToNextLevel;
+            LevelUp();
+        }
+
+        NotifyProgressChanged();
+    }
+
+    public void AddMeat(int amount)
+    {
+        if (amount <= 0) return;
+
+        storedMeat += amount;
+        NotifyProgressChanged();
+    }
+
+    public bool TrySpendMeat(int amount)
+    {
+        if (amount <= 0) return true;
+        if (storedMeat < amount) return false;
+
+        storedMeat -= amount;
+        NotifyProgressChanged();
+        return true;
+    }
+
+    private void LevelUp()
+    {
+        playerLevel++;
+
+        Vector3 s = transform.localScale;
+        s += Vector3.one * levelScaleIncrease;
+        transform.localScale = s;
+
+        if(levelupvfx != null) 
+        {
+            levelupvfx.Play();
+        }
+
+        NotifyProgressChanged();
+    }
+
+    public bool TryBuyAndSpawnCompanion(GameObject companionPrefab, int meatCost = 50)
+    {
+        if (companionPrefab == null)
+            return false;
+
+        if (!TrySpendMeat(meatCost))
+            return false;
+
+        Vector3[] offsets =
+        {
+        transform.right * 2f,
+        -transform.right * 2f,
+        transform.forward * 2f,
+        -transform.forward * 2f,
+        (transform.right + transform.forward).normalized * 2f
+    };
+
+        Vector3 spawnPosition = transform.position + offsets[0];
+
+        for (int i = 0; i < offsets.Length; i++)
+        {
+            Vector3 candidate = transform.position + offsets[i];
+
+            if (Physics.Raycast(candidate + Vector3.up * 5f, Vector3.down, out RaycastHit hit, 20f, groundMask))
+            {
+                spawnPosition = hit.point;
+                break;
+            }
+        }
+
+        Instantiate(companionPrefab, spawnPosition, Quaternion.identity);
+        NotifyProgressChanged();
+        return true;
+    }
+
+    private void NotifyProgressChanged()
+    {
+        OnProgressChanged?.Invoke();
+    }
 
     void UpdateAttackSectorRuntime()
     {
@@ -378,6 +498,8 @@ public class CCActor : MonoBehaviour
 
         InitializeStats();
 
+        Debug.Log($"Quality: {QualitySettings.names[QualitySettings.GetQualityLevel()]} | Shadows: {QualitySettings.shadows} | ShadowDist: {QualitySettings.shadowDistance}");
+
     }
 
 
@@ -468,14 +590,28 @@ public class CCActor : MonoBehaviour
         }
     }
 
+    public int GetUpgradeCost(PlayerStatType type)
+    {
+        var stat = GetStat(type);
+        if (stat == null) return 0;
+
+        // Example scaling cost
+        return 10 + (stat.level * 5);
+    }
+
     public bool UpgradeStat(PlayerStatType type)
     {
         var stat = stats.Find(s => s.type == type);
         if (stat == null || !stat.CanUpgrade)
             return false;
 
+        int cost = GetUpgradeCost(type);
+        if (!TrySpendMeat(cost))
+            return false;
+
         stat.Upgrade();
         ApplyStats();
+        NotifyProgressChanged();
         return true;
     }
 
@@ -551,6 +687,11 @@ public class CCActor : MonoBehaviour
 
     /// <summary>Fully refill hunger (utility).</summary>
     public void RefillHunger() => hunger = maxHunger;
+
+    public void AddHealth(float amount)
+    {
+        health.Heal(amount);
+    }
 
 
     private void UpdateStamina(bool sprinting, bool moving)
@@ -661,7 +802,7 @@ public class CCActor : MonoBehaviour
 
     public void AutoAttackLoop()
     {
-        // pick nearest valid target in auto-aggro radius
+        // Pick nearest valid target in auto-aggro radius
         Transform t = FindNearestEnemy();
 
         if (t != null && t.TryGetComponent<Health>(out var hp) && !hp.IsDead)
@@ -675,52 +816,49 @@ public class CCActor : MonoBehaviour
                 currentTarget = t;
                 isAttackingLoop = true;
 
-                // keep attack anim playing while enemies are present
+                // Keep attack anim playing while target is valid
                 animHandler?.SetAnimation(eCuteAnimalAnims.ATTACK);
 
-                // cooldown tick
                 if (autoAttackTimer <= 0f)
                 {
-                    // melee hit sphere positioned in front, aligned with forward
+                    // Double-check the chosen target is also inside the actual hit area
                     Vector3 hitCenter = transform.position + transform.forward * hitForwardOffset;
 
-                    Collider[] hits = Physics.OverlapSphere(hitCenter, attackHitRadius, enemyLayer);
-                    foreach (var h in hits)
+                    Vector3 closestPoint = t.GetComponent<Collider>() != null
+                        ? t.GetComponent<Collider>().ClosestPoint(hitCenter)
+                        : t.position;
+
+                    bool targetInsideHitRadius =
+                        (closestPoint - hitCenter).sqrMagnitude <= attackHitRadius * attackHitRadius;
+
+                    if (targetInsideHitRadius)
                     {
-                        if (h.TryGetComponent<Health>(out var eh) && !eh.IsDead)
+                        hp.TakeDamage(attackDamage);
+                        _arrowT = 0f;
+
+                        if (t.TryGetComponent<CuteAnimalAI>(out var ai))
                         {
-                            // Optional: also require hit angle for each collider if you want stricter arcs
-                            // if (requireFacing && !IsFacing(h.transform)) continue;
-
-                            eh.TakeDamage(attackDamage);
-                            _arrowT = 0f;
-
-                            if (h.TryGetComponent<CuteAnimalAI>(out var ai))
-                            {
-                                Vector3 kb = (h.transform.position - transform.position).normalized;
-                                ai.ApplyKnockback(kb);
-                            }
-
-                            break;
+                            Vector3 kb = (t.position - transform.position).normalized;
+                            ai.ApplyKnockback(kb);
                         }
                     }
 
                     autoAttackTimer = autoAttackCooldown;
                 }
 
-                return; // stay in attack loop
+                return;
             }
 
-            // If in aggro radius but NOT facing (or slightly out of attackRange), optionally rotate toward target
+            // If in aggro radius but not yet facing, rotate toward target
             if (!disableAttackRotation && d <= autoAttackRadius)
             {
-                Vector3 to = (t.position - transform.position);
+                Vector3 to = t.position - transform.position;
                 to.y = 0f;
                 RotateTowards(to);
             }
         }
 
-        // no valid target in attack cone -> stop attack loop
+        // No valid target
         currentTarget = null;
         isAttackingLoop = false;
     }

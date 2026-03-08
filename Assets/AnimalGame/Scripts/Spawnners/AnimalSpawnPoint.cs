@@ -75,6 +75,13 @@ public class AnimalSpawnPoint : MonoBehaviour
     [Tooltip("If ON and a parent AnimalSpawner exists with a global aggressive cap, respect it.")]
     public bool respectAggressiveCapFromParent = true;
 
+    [Tooltip("When the whole wave (including guardians, if any) is dead, wait this long before starting the next wave.")]
+    public float respawnDelay = 10.0f;
+
+    public enum SpawnCycleState { FillingWave, LockedUntilAllDead, RespawnCooldown }
+    public SpawnCycleState _cycleState = SpawnCycleState.FillingWave;
+    float _respawnTimer;
+
     // ── runtime ────────────────────────────────────────────────────────────────
     Transform _player;
     AnimalSpawner _parent;
@@ -259,20 +266,72 @@ public class AnimalSpawnPoint : MonoBehaviour
             _player = go ? go.transform : null;
         }
 
-        // compact list (pooled or dead)
-        _alive.RemoveAll(a => !a || !a.activeInHierarchy);
+        // compact lists (pooled or dead)
+        _alive.RemoveAll(a => !IsAlive(a));
+        _aliveGuardians.RemoveAll(g => !IsAlive(g));
 
-        if (_alive.Count >= Mathf.Max(0, pointMaxAlive)) return;
+        int cap = Mathf.Max(0, pointMaxAlive);
+        if (cap == 0) return;
 
-        _timer -= Time.deltaTime;
-        if (_timer > 0f) return;
-        _timer = pointSpawnInterval;
+        // Once a wave is FULL, we stop replacing losses until EVERYTHING is dead.
+        // Then we wait respawnDelay, and start filling again.
+        switch (_cycleState)
+        {
+            case SpawnCycleState.FillingWave:
+                {
+                    if (_alive.Count >= cap)
+                    {
+                        _cycleState = SpawnCycleState.LockedUntilAllDead;
+                        return;
+                    }
 
-        TrySpawnOne();
+                    _timer -= Time.deltaTime;
+                    if (_timer > 0f) return;
+                    _timer = pointSpawnInterval;
+
+                    TrySpawnOne();
+                    break;
+                }
+
+            case SpawnCycleState.LockedUntilAllDead:
+                {
+                    // No top-ups. Wait for the entire wave to be wiped.
+                    if (_alive.Count == 0 && _aliveGuardians.Count == 0)
+                    {
+                        _cycleState = SpawnCycleState.RespawnCooldown;
+                        _respawnTimer = Mathf.Max(0f, respawnDelay);
+                    }
+                    break;
+                }
+
+            case SpawnCycleState.RespawnCooldown:
+                {
+                    // Safety: if something respawned/was re-enabled externally, go back to locked.
+                    if (_alive.Count > 0 || _aliveGuardians.Count > 0)
+                    {
+                        _cycleState = SpawnCycleState.LockedUntilAllDead;
+                        return;
+                    }
+
+                    _respawnTimer -= Time.deltaTime;
+                    if (_respawnTimer > 0f) return;
+
+                    // Start next wave
+                    _cycleState = SpawnCycleState.FillingWave;
+                    _timer = 0f; // spawn immediately
+                    break;
+                }
+        }
     }
 
 
-        
+    bool IsAlive(GameObject go)
+    {
+        if (!go || !go.activeInHierarchy) return false;
+        var h = go.GetComponent<Health>();
+        if (h && h.IsDead) return false;
+        return true;
+    }
 
 
 
