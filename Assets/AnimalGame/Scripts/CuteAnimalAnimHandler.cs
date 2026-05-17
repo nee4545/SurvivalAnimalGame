@@ -18,7 +18,7 @@ public enum eCuteAnimalAnims
 
 public enum CuteAnimControllerType
 {
-    GenericInt,   // your current system: int "animation"
+    GenericInt,   // old system: int "animation"
     SpiderBool,   // spider controller: isWalking / isScared / isAttacking / isDead1/2/3
     SnakeBool     // snake controller: isIdle / isWalking / isAttacking / isDead
 }
@@ -30,12 +30,39 @@ public class AnimationBoolSet
     public string[] parameterNames;
 }
 
+[System.Serializable]
+public class AnimationNameSet
+{
+    [Tooltip("Animator state names for this category. One will be randomly chosen. These are NOT parameters.")]
+    public string[] stateNames;
+}
+
 public class CuteAnimalAnimHandler : MonoBehaviour
 {
     public Animator animator;
 
     [Header("Controller Type (for old animals)")]
     public CuteAnimControllerType controllerType = CuteAnimControllerType.GenericInt;
+
+    [Header("Human / Direct State Name Animations")]
+    [Tooltip("Enable this for humanoid/human characters where you want to play Animator states directly by name instead of using parameters.")]
+    public bool isHuman = false;
+
+    [Tooltip("Use a small fade when switching states. Disable if you want animator.Play() to snap immediately.")]
+    public bool humanUseCrossFade = true;
+
+    [Tooltip("Fade duration used when humanUseCrossFade is enabled.")]
+    public float humanCrossFadeTime = 0.1f;
+
+    public AnimationNameSet humanIdleSet;
+    public AnimationNameSet humanWalkSet;
+    public AnimationNameSet humanRunSet;
+    public AnimationNameSet humanJumpSet;
+    public AnimationNameSet humanAttackSet;
+    public AnimationNameSet humanDeathSet;
+    public AnimationNameSet humanRestSet;
+    public AnimationNameSet humanEatSet;
+    public AnimationNameSet humanDamageSet;
 
     [Header("PolyPerfect Pack")]
     [Tooltip("Enable this for animals using the new PolyPerfect-style Animator (bool parameters).")]
@@ -80,7 +107,7 @@ public class CuteAnimalAnimHandler : MonoBehaviour
 
     void Start()
     {
-       
+
 
         if (isPolyPerfectAnimal)
         {
@@ -94,6 +121,90 @@ public class CuteAnimalAnimHandler : MonoBehaviour
     void Update()
     {
         // no-op, driven externally
+    }
+
+    // ---------------- HUMAN / DIRECT STATE NAME HELPERS ----------------
+
+    bool TryPlayHumanNonEmpty(AnimationNameSet set)
+    {
+        if (set == null || set.stateNames == null || set.stateNames.Length == 0)
+            return false;
+
+        PlayHumanFromSet(set);
+        return true;
+    }
+
+    void PlayHumanFromSet(AnimationNameSet set)
+    {
+        if (animator == null || set == null || set.stateNames == null || set.stateNames.Length == 0)
+            return;
+
+        string chosen = set.stateNames.Length == 1
+            ? set.stateNames[0]
+            : set.stateNames[Random.Range(0, set.stateNames.Length)];
+
+        if (string.IsNullOrEmpty(chosen))
+            return;
+
+        // This plays an Animator STATE directly by name.
+        // The name must match the state name inside your Animator Controller.
+        if (humanUseCrossFade && humanCrossFadeTime > 0f)
+            animator.CrossFadeInFixedTime(chosen, humanCrossFadeTime, 0);
+        else
+            animator.Play(chosen, 0, 0f);
+    }
+
+    void ApplyHumanAnimation(eCuteAnimalAnims animation)
+    {
+        switch (animation)
+        {
+            case eCuteAnimalAnims.IDLE:
+            case eCuteAnimalAnims.NONE:
+                TryPlayHumanNonEmpty(humanIdleSet);
+                break;
+
+            case eCuteAnimalAnims.WALK:
+                if (!TryPlayHumanNonEmpty(humanWalkSet))
+                    TryPlayHumanNonEmpty(humanIdleSet);
+                break;
+
+            case eCuteAnimalAnims.RUN:
+                if (!TryPlayHumanNonEmpty(humanRunSet))
+                {
+                    if (!TryPlayHumanNonEmpty(humanWalkSet))
+                        TryPlayHumanNonEmpty(humanIdleSet);
+                }
+                break;
+
+            case eCuteAnimalAnims.JUMP:
+                if (TryPlayHumanNonEmpty(humanJumpSet))
+                    StartCoroutine(LockAnimationRoutine());
+                break;
+
+            case eCuteAnimalAnims.ATTACK:
+                if (TryPlayHumanNonEmpty(humanAttackSet))
+                    StartCoroutine(LockAnimationRoutine(0.5f));
+                break;
+
+            case eCuteAnimalAnims.DIE:
+                TryPlayHumanNonEmpty(humanDeathSet);
+                break;
+
+            case eCuteAnimalAnims.REST:
+                if (!TryPlayHumanNonEmpty(humanRestSet))
+                    TryPlayHumanNonEmpty(humanIdleSet);
+                break;
+
+            case eCuteAnimalAnims.EAT:
+                if (!TryPlayHumanNonEmpty(humanEatSet))
+                    TryPlayHumanNonEmpty(humanIdleSet);
+                break;
+
+            case eCuteAnimalAnims.DAMAGE:
+                if (TryPlayHumanNonEmpty(humanDamageSet))
+                    StartCoroutine(LockAnimationRoutine(0.35f));
+                break;
+        }
     }
 
     // ---------------- POLYPERFECT HELPERS ----------------
@@ -373,14 +484,21 @@ public class CuteAnimalAnimHandler : MonoBehaviour
 
         currentAnimState = animation;
 
-        // 1) PolyPerfect path: new pack animals
+        // 1) Human path: play Animator states directly by name, no parameters
+        if (isHuman)
+        {
+            ApplyHumanAnimation(animation);
+            return;
+        }
+
+        // 2) PolyPerfect path: new pack animals
         if (isPolyPerfectAnimal)
         {
             ApplyPolyPerfectAnimation(animation);
             return;
         }
 
-        // 2) Old bool-based specials
+        // 3) Old bool-based specials
         if (controllerType == CuteAnimControllerType.SpiderBool)
         {
             ApplySpiderAnimation(animation);
@@ -393,7 +511,7 @@ public class CuteAnimalAnimHandler : MonoBehaviour
             return;
         }
 
-        // 3) Default old system: int "animation" parameter
+        // 4) Default old system: int "animation" parameter
         switch (animation)
         {
             case eCuteAnimalAnims.IDLE:

@@ -119,6 +119,54 @@ namespace Terresquall
             }
         }
 
+        public void SetJoystickVisibleForHunt(bool visible)
+        {
+            if (visible)
+            {
+                gameObject.SetActive(true);
+
+                // After re-enable, keep the joystick in a clean neutral state.
+                currentPointerId = -2;
+                axis = Vector2.zero;
+                lastAxis = Vector2.zero;
+
+                UpdateDefaultRootPosition();
+
+                transform.position = defaultRootPosition;
+                origin = defaultRootPosition;
+                desiredPosition = defaultRootPosition;
+
+                if (controlStick)
+                {
+                    controlStick.transform.position = defaultRootPosition;
+                    controlStick.color = originalColor;
+                }
+
+                if (startHidden)
+                    HideNow();
+                else
+                    ShowIfHidden();
+            }
+            else
+            {
+                // Reset input before hiding so player does not keep moving.
+                currentPointerId = -2;
+                axis = Vector2.zero;
+                lastAxis = Vector2.zero;
+
+                origin = transform.position;
+                desiredPosition = transform.position;
+
+                if (controlStick)
+                {
+                    controlStick.transform.position = transform.position;
+                    controlStick.color = originalColor;
+                }
+
+                gameObject.SetActive(false);
+            }
+        }
+
 
         /// <summary>
         /// Computes and sets the default root position based on screen centre + Y offset.

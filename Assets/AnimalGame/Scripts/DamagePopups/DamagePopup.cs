@@ -41,6 +41,25 @@ public class DamagePopup : MonoBehaviour
         PlayAnimation();
     }
 
+    public void InitText(string popupText)
+    {
+
+        cam = Camera.main;
+
+        if (textMesh != null)
+            textMesh.text = popupText;
+
+        if (visualRoot == null)
+            visualRoot = transform;
+
+        visualRoot.localScale = Vector3.one * startScale;
+
+        if (canvasGroup != null)
+            canvasGroup.alpha = 1f;
+
+        PlayAnimation();
+    }
+
     void PlayAnimation()
     {
         Sequence seq = DOTween.Sequence();

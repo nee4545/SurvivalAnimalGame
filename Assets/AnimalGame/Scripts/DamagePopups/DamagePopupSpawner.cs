@@ -25,7 +25,25 @@ public class DamagePopupSpawner : MonoBehaviour
     {
         if (popupPrefab == null) return;
 
-        DamagePopup popup = Instantiate(popupPrefab, worldPosition + defaultOffset, Quaternion.identity);
+        DamagePopup popup = Instantiate(
+            popupPrefab,
+            worldPosition + defaultOffset,
+            Quaternion.identity
+        );
+
         popup.Init(damage);
+    }
+
+    public void ShowTextPopup(Vector3 worldPosition, string text)
+    {
+        if (popupPrefab == null) return;
+
+        DamagePopup popup = Instantiate(
+            popupPrefab,
+            worldPosition + defaultOffset,
+            Quaternion.identity
+        );
+
+        popup.InitText(text);
     }
 }

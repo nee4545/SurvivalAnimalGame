@@ -37,7 +37,7 @@ public class Health : MonoBehaviour
         onHealthChanged?.Invoke(currentHealth, maxHealth);
     }
 
-    public void TakeDamage(float damage, Transform attacker = null)
+    public void TakeDamage(float damage, Transform attacker = null, bool showPopUp = true)
     {
         if (IsDead) return;
         if (damage <= 0f) return;
@@ -47,7 +47,7 @@ public class Health : MonoBehaviour
         Damaged?.Invoke(transform, attacker);
         onHealthChanged?.Invoke(currentHealth, maxHealth);
 
-        if(!isPlayerhealth)
+        if(!isPlayerhealth && showPopUp)
             DamagePopupSpawner.Instance?.ShowPopup(transform.position + Vector3.up * 1.5f, (int)damage);
 
         if (currentHealth <= 0f && !IsDead)

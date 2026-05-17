@@ -1,34 +1,31 @@
 using UnityEngine;
 
-public class MeatPickup : PickupBase
+[RequireComponent(typeof(Collider))]
+public class MeatPickup : MonoBehaviour
 {
-    [Header("Meat")]
-    public int meatAmount = 1;
-    public float hungerRestore = 20f;
-    public float healthRestore = 2f;
-    public bool restoreStatsOnCollect = true;
+    public bool canBePickedUp = true;
 
-    public bool spin = true;
-    public float spinSpeed = 180f;
-
-    protected override void Update()
+    private void Reset()
     {
-        base.Update();
-        if (spin) transform.Rotate(0f, spinSpeed * Time.deltaTime, 0f, Space.World);
+        Collider col = GetComponent<Collider>();
+        col.isTrigger = true;
     }
 
-    protected override bool TryCollect(CCActor player)
+    private void OnTriggerEnter(Collider other)
     {
-        if (!player) return false;
+        if (!canBePickedUp)
+            return;
 
-        player.AddMeat(meatAmount);
+        PlayerMeatCarrier carrier = other.GetComponentInParent<PlayerMeatCarrier>();
 
-        if (restoreStatsOnCollect)
+        if (carrier == null)
+            return;
+
+        bool collected = carrier.TryCollectMeat(gameObject);
+
+        if (collected)
         {
-            player.AddHunger(hungerRestore);
-            player.AddHealth(healthRestore);
+            canBePickedUp = false;
         }
-
-        return true;
     }
 }

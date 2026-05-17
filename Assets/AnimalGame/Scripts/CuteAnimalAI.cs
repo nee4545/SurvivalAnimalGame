@@ -71,6 +71,12 @@ public class CuteAnimalAI : MonoBehaviour
     public AnimalSizeClass sizeClass;
 
     public static readonly List<CuteAnimalAI> All = new();
+    [Header("AI Activity Override")]
+
+    [SerializeField] private bool alwaysRunFullAI = false;
+
+    public bool AlwaysRunFullAI => alwaysRunFullAI;
+
     [SerializeField] private AIActivityMode _activityMode = AIActivityMode.Full;
 
     [Header("🧠 AI Behavior Type")]
@@ -85,7 +91,7 @@ public class CuteAnimalAI : MonoBehaviour
     public float homeRadius = 8f;
 
     [Tooltip("If true, this animal must return to its spawn position before resting / idling.")]
-    private bool forceReturnHome = true;
+    public  bool forceReturnHome = true;
 
     [Tooltip("Enable flocking (alignment, cohesion, separation) with same-type neighbors.")]
     public bool enableFlocking = false;
@@ -145,6 +151,10 @@ public class CuteAnimalAI : MonoBehaviour
     public float followBehindDistance = 2.0f;  // tweak
     public float followRepathInterval = 0.15f;  // throttle
 
+    [Header("Passive Easy Flee Recovery")]
+    public float passiveEasyCalmDuration = 4f;
+    public float passiveEasySafeDistanceMultiplier = 2f;
+
 
     [Header("Pounce Settings")]
     public bool canPounce = false;
@@ -174,6 +184,20 @@ public class CuteAnimalAI : MonoBehaviour
     public int attackDamage = 10;
     [Tooltip("Duration of attack animation/state.")]
     public float attackDuration = 0.6f;
+
+
+    [Header("🏹 Ranged Attack")]
+    public bool isRangedAttacker = false;
+    public GameObject projectilePrefab;
+    public Transform projectileSpawnPoint;
+    public float projectileSpeed = 12f;
+    public float projectileLifetime = 5f;
+
+    // Use this if arrow should release after animation starts
+    public float projectileFireDelay = 0.25f;
+
+    public bool projectileFiredThisAttack;
+
 
     [Header("⏱️ Timing Settings")]
     [Tooltip("Wander decision interval.")]
@@ -358,7 +382,9 @@ public class CuteAnimalAI : MonoBehaviour
     [Tooltip("Alignment weight (match direction).")]
     public float flockAlignmentWeight = 1f;
 
-    [Header("🐏 Charge Knockback (Player)")]
+    [Header("🐏 Player Parabolic Knockback")]
+    [Tooltip("If true, Aggressive and AggressiveType2 animals launch the player in a parabolic knockback when attacking.")]
+    public bool shouldDoParabolicknockback = false;
     [Tooltip("Horizontal distance the player is pushed back on a charge hit.")]
     public float playerKnockbackDistance = 10f;
 
@@ -644,6 +670,8 @@ public class CuteAnimalAI : MonoBehaviour
     public AIPerchRestState _perchRestState;
     public AIJumpAttackState _jumpAttackState;
     public AIJumpReturnHomeState _jumpReturnHomeState;
+    public AIDeadState _deadState;
+    public AIPassiveEasyCalmState _passiveEasyCalmState;
 
     private bool IsValidTarget(Transform t)
     {
@@ -684,10 +712,26 @@ public class CuteAnimalAI : MonoBehaviour
         }
     }
 
+    public bool ShouldDoParabolicPlayerKnockback()
+    {
+        if (!shouldDoParabolicknockback)
+            return false;
 
+        return aiType == AIType.Aggressive ||
+               aiType == AIType.AggressiveType2;
+    }
 
     public void SetActivityMode(AIActivityMode mode)
     {
+        // Some special animals should never be throttled by the Activity Manager.
+        // Example: bosses, large predators, long-range enemies, special guardians.
+        if (alwaysRunFullAI)
+        {
+            _activityMode = AIActivityMode.Full;
+            EnableFullAI();
+            return;
+        }
+
         if (_activityMode == mode)
             return;
 
@@ -742,11 +786,57 @@ public class CuteAnimalAI : MonoBehaviour
     {
         aiPaused = false;
 
-        if (agent && !agent.enabled)
-            agent.enabled = true;
-
         if (animator && !animator.enabled)
             animator.enabled = true;
+
+        // Do not force-enable the NavMeshAgent while charging.
+        if (StateMachine != null && StateMachine.CurrentState is AIChargeState)
+            return;
+
+        if (agent && !agent.enabled)
+        {
+            if (!ShouldKeepAgentDisabledForPerch())
+                EnsureAgentOnNavMesh();
+        }
+    }
+
+
+    public IEnumerator FireProjectileAfterDelay(Transform target)
+    {
+        if (projectileFiredThisAttack)
+            yield break;
+
+        projectileFiredThisAttack = true;
+
+        yield return new WaitForSeconds(projectileFireDelay);
+
+        if (projectilePrefab == null || target == null)
+            yield break;
+
+        Transform spawn = projectileSpawnPoint != null ? projectileSpawnPoint : transform;
+
+        GameObject proj = Instantiate(
+            projectilePrefab,
+            spawn.position,
+            Quaternion.identity
+        );
+
+        Vector3 targetPoint = target.position + Vector3.up * 1.0f;
+        Vector3 dir = (targetPoint - spawn.position).normalized;
+
+        proj.transform.rotation = Quaternion.LookRotation(dir);
+        proj.transform.rotation = Quaternion.LookRotation(dir) * Quaternion.Euler(90f, 0f, 0f);
+
+        CuteAnimalProjectile projectile = proj.GetComponent<CuteAnimalProjectile>();
+        if (projectile != null)
+        {
+            projectile.Init(
+                dir,
+                projectileSpeed,
+                attackDamage,
+                projectileLifetime
+            );
+        }
     }
 
     /// <summary>
@@ -1046,20 +1136,21 @@ public class CuteAnimalAI : MonoBehaviour
     {
         _aiParabolicKnockbackActive = true;
 
-        // Pause NavMeshAgent “ground snapping” while we manually animate in 3D.
-        if (agent != null)
+        if (agent != null && agent.isActiveAndEnabled)
         {
             _savedAgentUpdatePos = agent.updatePosition;
             _savedAgentUpdateRot = agent.updateRotation;
-            _savedAgentStopped = agent.isStopped;
 
-            agent.ResetPath();
-            agent.isStopped = true;
+            if (agent.isOnNavMesh)
+            {
+                agent.ResetPath();
+                agent.isStopped = true;
+            }
+
             agent.updatePosition = false;
             agent.updateRotation = false;
         }
 
-        // Clear any ground knockback that might still be active.
         knockbackTimer = 0f;
         knockbackVector = Vector3.zero;
 
@@ -1067,6 +1158,7 @@ public class CuteAnimalAI : MonoBehaviour
         Vector3 end = start + dir * distance;
 
         float elapsed = 0f;
+
         while (elapsed < duration)
         {
             float t = Mathf.Clamp01(elapsed / duration);
@@ -1080,23 +1172,31 @@ public class CuteAnimalAI : MonoBehaviour
             yield return null;
         }
 
-        // Land + warp agent cleanly back onto the navmesh near the landing spot.
         Vector3 land = end;
 
         if (agent != null && agent.enabled)
         {
-            if (NavMesh.SamplePosition(land, out var hit, 2f, NavMesh.AllAreas))
+            bool foundNavMesh = NavMesh.SamplePosition(
+                land,
+                out var hit,
+                4f,
+                NavMesh.AllAreas
+            );
+
+            if (foundNavMesh)
                 land = hit.position;
+
+            transform.position = land;
 
             agent.updatePosition = _savedAgentUpdatePos;
             agent.updateRotation = _savedAgentUpdateRot;
 
-            if (agent.isOnNavMesh)
+            if (agent.isActiveAndEnabled && foundNavMesh)
                 agent.Warp(land);
-            else
-                transform.position = land;
 
-            agent.isStopped = _savedAgentStopped;
+            agent.ResetPath();
+            agent.isStopped = false;
+            agent.nextPosition = transform.position;
         }
         else
         {
@@ -1540,6 +1640,8 @@ public class CuteAnimalAI : MonoBehaviour
         _perchRestState = new AIPerchRestState(this);
         _jumpAttackState = new AIJumpAttackState(this);
         _jumpReturnHomeState = new AIJumpReturnHomeState(this);
+        _deadState = new AIDeadState(this);
+        _passiveEasyCalmState = new AIPassiveEasyCalmState(this);
 
 
         lodNearSq = lodNear * lodNear;
@@ -1782,6 +1884,27 @@ public class CuteAnimalAI : MonoBehaviour
 
     private void EvalLod()
     {
+
+        if (alwaysRunFullAI)
+        {
+            _lod = LOD.Near;
+
+            if (animator && !animator.enabled)
+                animator.enabled = true;
+
+            // Do not touch NavMeshAgent while charging.
+            if (StateMachine != null && StateMachine.CurrentState is AIChargeState)
+                return;
+
+            if (agent && !agent.enabled)
+            {
+                if (!ShouldKeepAgentDisabledForPerch())
+                    EnsureAgentOnNavMesh();
+            }
+
+            return;
+        }
+
         if (player == null) { _lod = LOD.Far; return; } // conservative
         float d2 = (player.position - transform.position).sqrMagnitude;
 
@@ -2326,8 +2449,14 @@ public class CuteAnimalAI : MonoBehaviour
 
     private void Update()
     {
-        if (aiPaused)
+        if (aiPaused && !alwaysRunFullAI)
             return;
+
+        if (alwaysRunFullAI && aiPaused)
+        {
+            aiPaused = false;
+            _activityMode = AIActivityMode.Full;
+        }
 
         var inst = PlayerLocator.Instance;
         if (inst != null && inst != player && inst.gameObject.activeInHierarchy && inst.gameObject.scene.IsValid())
@@ -2353,30 +2482,36 @@ public class CuteAnimalAI : MonoBehaviour
             playerVelocitySmoothed = Vector3.Lerp(playerVelocitySmoothed, rawV, playerVelSmoothing);
         }
 
-
         if (Time.time >= _nextLodEval)
         {
             EvalLod();
             _nextLodEval = Time.time + lodEvalInterval;
         }
 
-        // Hard cull pathing/brain if very far
-        if (_lod == LOD.Cull) return;
+        // Hard cull pathing/brain if very far.
+        // Special full-AI animals ignore this.
+        if (!alwaysRunFullAI && _lod == LOD.Cull)
+            return;
 
-        // Decide current cadence from LOD
-        float thinkInterval = _lod == LOD.Near ? thinkIntervalNear
-                            : _lod == LOD.Mid ? thinkIntervalMid
-                            : thinkIntervalFar;
+        // Decide current cadence from LOD.
+        // Special full-AI animals always think like Near LOD.
+        float thinkInterval = alwaysRunFullAI ? thinkIntervalNear :
+                              _lod == LOD.Near ? thinkIntervalNear :
+                              _lod == LOD.Mid ? thinkIntervalMid :
+                              thinkIntervalFar;
 
-        float navInterval = _lod == LOD.Near ? navIntervalNear
-                            : _lod == LOD.Mid ? navIntervalMid
-                            : navIntervalFar;
+        float navInterval = alwaysRunFullAI ? navIntervalNear :
+                            _lod == LOD.Near ? navIntervalNear :
+                            _lod == LOD.Mid ? navIntervalMid :
+                            navIntervalFar;
 
 
         // 1) Death check
         if (health != null && health.IsDead)
         {
-            StateMachine.ChangeState(new AIDeadState(this));
+            if (!(StateMachine.CurrentState is AIDeadState))
+                StateMachine.ChangeState(_deadState);
+
             return;
         }
 
@@ -2563,9 +2698,9 @@ public class CuteAnimalAI : MonoBehaviour
         if (aiType == AIType.AggressiveJumping)
             return;
 
-        if(agent.enabled && agent.isOnNavMesh)
+        if(agent && agent.enabled && agent.isOnNavMesh)
         agent.ResetPath();
-        //animHandler?.SetAnimation(eCuteAnimalAnims.DAMAGE);
+        animHandler?.SetAnimation(eCuteAnimalAnims.DAMAGE);
     }
 
     private Coroutine _flashCo;
@@ -2686,6 +2821,11 @@ public class AIRestState : IState
     private bool isEating;
 
     public AIRestState(CuteAnimalAI ai) { this.ai = ai; }
+
+    private bool AgentReady()
+    {
+        return ai.agent && ai.agent.enabled && ai.agent.isOnNavMesh;
+    }
 
     public void Enter()
     {
@@ -3930,7 +4070,12 @@ public class AIChaseState : IState
 
         float dist = Vector3.Distance(ai.transform.position, target.position);
         if (dist > ai.detectionRange * 1.5f) { ai.ChangeStateToWander(); return; }
-        if (dist <= ai.attackRange) { ai.StateMachine.ChangeState(ai._attackState); return; }
+        if (dist <= ai.attackRange) 
+        {
+            ai._attackState.SetTarget(target);
+            ai.StateMachine.ChangeState(ai._attackState); 
+            return; 
+        }
 
         // Optional pounce to close gap
         if (ai.canPounce && ai.pounceCooldownTimer <= 0f)
@@ -3990,18 +4135,41 @@ public class AIAttackState : IState
         timer = attackDuration;
 
 
+        ai.projectileFiredThisAttack = false;
+
         if (attackTarget != null && ai.attackTimer <= 0f)
         {
-            Health ph = attackTarget.GetComponent<Health>();
-            if (ph != null)
+            if (ai.isRangedAttacker)
             {
-                ph.TakeDamage(ai.attackDamage);
+                ai.StartCoroutine(ai.FireProjectileAfterDelay(attackTarget));
             }
-
-            PlayerEffects effects = attackTarget.GetComponent<PlayerEffects>();
-            if(effects!=null)
+            else
             {
-                effects.PlayBloodVFX();
+                Health ph = attackTarget.GetComponent<Health>();
+                if (ph != null)
+                    ph.TakeDamage(ai.attackDamage);
+
+                PlayerEffects effects = attackTarget.GetComponent<PlayerEffects>();
+                if (effects != null)
+                    effects.PlayBloodVFX();
+
+                // Big animal polish: launch player backward in a parabolic arc.
+                if (ai.ShouldDoParabolicPlayerKnockback())
+                {
+                    CCActor playerActor = attackTarget.GetComponent<CCActor>();
+
+                    if (playerActor != null)
+                    {
+                        Vector3 knockDir = attackTarget.position - ai.transform.position;
+                        knockDir.y = 0f;
+
+                        if (knockDir.sqrMagnitude < 0.001f)
+                            knockDir = ai.transform.forward;
+
+                        ai.StartPlayerKnockback(knockDir);
+                    }
+                }
+
             }
 
             ai.attackTimer = ai.attackCooldown;
@@ -4497,7 +4665,7 @@ public class AIChargeState : IState
             }
 
             var otherAI = hit.GetComponent<CuteAnimalAI>();
-            if (!otherAI || otherAI == ai)
+            if (!otherAI || otherAI == ai || otherAI.sizeClass == AnimalSizeClass.Large || otherAI.sizeClass == AnimalSizeClass.Massive)
                 continue;
 
             int id = otherAI.GetInstanceID();
@@ -4619,6 +4787,48 @@ public class AIFollowGuardianState : IState
     }
 }
 
+public class AIPassiveEasyCalmState : IState
+{
+    private readonly CuteAnimalAI ai;
+    private float calmTimer;
+
+    public AIPassiveEasyCalmState(CuteAnimalAI ai)
+    {
+        this.ai = ai;
+    }
+
+    public void Enter()
+    {
+        calmTimer = ai.passiveEasyCalmDuration;
+
+        if (ai.agent)
+        {
+            ai.agent.ResetPath();
+            ai.agent.speed = ai.wanderSpeed;
+        }
+
+        ai.animHandler?.SetAnimation(eCuteAnimalAnims.IDLE);
+    }
+
+    public void Update()
+    {
+        if (ai.TryGetNearestFearSource(ai.fleeRange, out _, out _))
+        {
+            ai.StateMachine.ChangeState(ai._fleeSimple);
+            return;
+        }
+
+        calmTimer -= Time.deltaTime;
+
+        if (calmTimer <= 0f)
+        {
+            ai.ChangeStateToWander();
+        }
+    }
+
+    public void Exit() { }
+}
+
 
 public class AIFleeSimpleState : IState
 {
@@ -4641,9 +4851,9 @@ public class AIFleeSimpleState : IState
         }
 
         float distanceToPlayer = ai.DistanceToPlayer();
-        if (distanceToPlayer > ai.fleeRange * 2f)
+        if (distanceToPlayer > ai.fleeRange * ai.passiveEasySafeDistanceMultiplier)
         {
-            ai.ChangeStateToWander();
+            ai.StateMachine.ChangeState(ai._passiveEasyCalmState);
             return;
         }
 
@@ -5180,7 +5390,7 @@ public class AICompanionIdleState : IState
             var prey = ai.GetClosestAnimalTarget(ai.maxChaseDistance);
             if (prey != null)
             {
-                ai._companionChase.SetTrarget(prey);
+                ai._companionChase.SetTarget(prey);
                 ai.StateMachine.ChangeState(ai._companionChase);
                 return;
             }
@@ -5237,7 +5447,7 @@ public class AICompanionFollowState : IState
             var prey = ai.GetClosestAnimalTarget(ai.maxChaseDistance);
             if (prey != null)
             {
-                ai._companionChase.SetTrarget(prey);
+                ai._companionChase.SetTarget(prey);
                 ai.StateMachine.ChangeState(ai._companionChase);
                 return;
             }
@@ -5269,7 +5479,7 @@ public class CompanionChaseState : IState
         this.target = target;
     }
 
-    public void SetTrarget(Transform target)
+    public void SetTarget(Transform target)
     {
         this.target = target;
     }
@@ -5301,7 +5511,7 @@ public class CompanionChaseState : IState
 
             if (newTargetDist < currentTargetDist * 0.7f) // 30% closer threshold
             {
-                ai._companionChase.SetTrarget(potentiallyBetterTarget);
+                ai._companionChase.SetTarget(potentiallyBetterTarget);
                 ai.StateMachine.ChangeState(ai._companionChase);
                 return;
             }
@@ -5404,7 +5614,7 @@ public class CompanionAttackState : IState
         // If out of melee but still near, go back to chase
         if (dist > ai.attackRange && dist <= ai.companionDetectionRange)
         {
-            ai._companionChase.SetTrarget(target);
+            ai._companionChase.SetTarget(target);
             ai.StateMachine.ChangeState(ai._companionChase);
             return;
         }
@@ -5420,7 +5630,7 @@ public class CompanionAttackState : IState
             }
             else if (dist <= ai.companionDetectionRange)
             {
-                ai._companionChase.SetTrarget(target);
+                ai._companionChase.SetTarget(target);
                 ai.StateMachine.ChangeState(ai._companionChase);
             }
             else

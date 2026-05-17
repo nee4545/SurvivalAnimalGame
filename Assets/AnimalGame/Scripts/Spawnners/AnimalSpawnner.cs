@@ -212,7 +212,7 @@ public class AnimalSpawner : MonoBehaviour
         // Compute position
         if (!TryGetPointSpawnPosition(point, out Vector3 pos))
         {
-            //Do nothing for now
+            return;
         }
 
         // Pick prefab with aggressive limit respected

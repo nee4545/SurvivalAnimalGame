@@ -140,6 +140,10 @@ public class CCActor : MonoBehaviour
     public float runStepOffset = 0.05f;      // nearly zero when sprinting
 
 
+    [Header("Debug / Testing")]
+    public bool hasInfiniteStamina = true;
+    public bool hasInfiniteHunger = true;
+
     [Header("Stamina")]
     [Tooltip("Max stamina value.")]
     public float maxStamina = 100f;
@@ -191,6 +195,8 @@ public class CCActor : MonoBehaviour
     [HideInInspector] public Health health;  // player health reference
 
     public bool isInParabola = false;
+
+    [HideInInspector] public bool isSlowMotionHuntActive = false;
 
     public int companionLimit = 1;
 
@@ -646,32 +652,39 @@ public class CCActor : MonoBehaviour
 
     private void UpdateHunger(bool sprinting)
     {
-        if (maxHunger <= 0f || pauseHungerDrain || isDead) return; // disabled or paused
+        if (maxHunger <= 0f || pauseHungerDrain || isDead)
+            return;
+
+        if (hasInfiniteHunger)
+        {
+            hunger = maxHunger;
+            return;
+        }
 
         float dt = Time.deltaTime;
 
-        // Drain
         float drain = hungerDrainPerSecond + (sprinting ? sprintBonusHungerDrain : 0f);
+
         if (drain > 0f)
         {
             hunger -= drain * dt;
-            if (hunger < 0f) hunger = 0f;
+            if (hunger < 0f)
+                hunger = 0f;
         }
 
-        // Starvation
         if (hunger <= 0f && health != null && !health.IsDead)
         {
-            // Convert DPS to integer damage events without changing Health API
             _starveDamageAccum += starvationDamagePerSecond * dt;
+
             int whole = (int)_starveDamageAccum;
+
             if (whole > 0)
             {
                 _starveDamageAccum -= whole;
                 health.TakeDamage(whole);
+
                 if (health.IsDead)
-                {
                     OnDeath();
-                }
             }
         }
     }
@@ -696,7 +709,14 @@ public class CCActor : MonoBehaviour
 
     private void UpdateStamina(bool sprinting, bool moving)
     {
-        if (maxStamina <= 0f) return; // disabled
+        if (maxStamina <= 0f)
+            return;
+
+        if (hasInfiniteStamina)
+        {
+            stamina = maxStamina;
+            return;
+        }
 
         float dt = Time.deltaTime;
 
@@ -708,17 +728,17 @@ public class CCActor : MonoBehaviour
             if (stamina <= 0f)
             {
                 stamina = 0f;
-                isRunning = false; // will force walk next frame
+                isRunning = false;
             }
         }
         else
         {
-            // Regen only after short cooldown
             if (Time.time >= _regenResumeTime)
             {
                 float regen = moving ? walkRegenPerSecond : idleRegenPerSecond;
                 stamina += regen * dt;
-                if (stamina > maxStamina) stamina = maxStamina;
+                if (stamina > maxStamina)
+                    stamina = maxStamina;
             }
         }
     }
@@ -729,6 +749,7 @@ public class CCActor : MonoBehaviour
     {
         if (isDead) return;
         if (isInParabola) return;
+        if (isSlowMotionHuntActive) return;
 
         ReadMovementInput();
 
@@ -738,27 +759,36 @@ public class CCActor : MonoBehaviour
         camF.y = camR.y = 0f; camF.Normalize(); camR.Normalize();
         Vector3 inputDir = camF * inputVec.y + camR * inputVec.x;
 
-        // —— Stamina-gated run vs walk (FIXED) ——
         bool wantsRun = inputVec.magnitude >= runThreshold;
         bool moving = inputDir.sqrMagnitude > 0.01f;
 
-        bool lastIsRunning = isRunning;                  // remember previous state
-        bool canStartRun = stamina >= minToStartRunning;
+        bool lastIsRunning = isRunning;
 
-        // Only keep sprinting if player STILL wants to run, is MOVING, and has stamina
-        bool keepSprinting = lastIsRunning && wantsRun && moving && stamina > 0.01f;
+        bool hasEnoughStamina =
+            hasInfiniteStamina ||
+            stamina >= minToStartRunning;
 
-        // If not moving at all, force sprint off
-        if (!moving) isRunning = false;
+        bool canKeepRunning =
+            hasInfiniteStamina ||
+            stamina > 0.01f;
 
-        // New sprint state
-        isRunning = (wantsRun && moving && canStartRun) || keepSprinting;
+        bool keepSprinting =
+            lastIsRunning &&
+            wantsRun &&
+            moving &&
+            canKeepRunning;
 
-        // If we just stopped sprinting, start regen cooldown now
+        if (!moving)
+            isRunning = false;
+
+        isRunning =
+            moving &&
+            wantsRun &&
+            (hasEnoughStamina || keepSprinting);
+
         if (lastIsRunning && !isRunning)
             _regenResumeTime = Time.time + regenDelayAfterSprint;
 
-        // Update stamina after deciding sprint state
         UpdateStamina(isRunning, moving);
         UpdateHunger(isRunning);
 

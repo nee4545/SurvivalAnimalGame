@@ -2,6 +2,10 @@
 using UnityEngine;
 using UnityEngine.AI;
 
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
+
 public class AnimalSpawnPoint : MonoBehaviour
 {
     public enum SpawnShape { Circle, Box }
@@ -213,6 +217,120 @@ public class AnimalSpawnPoint : MonoBehaviour
         if (_aliveGuardians.Count == 0) return null;
         return _aliveGuardians[Random.Range(0, _aliveGuardians.Count)].transform;
     }
+
+
+    public void SpawnToPointMaxForLevelDesign(Transform forcedParent = null)
+    {
+        CacheManualSpawnReferences();
+
+        int targetCount = Mathf.Max(0, pointMaxAlive);
+        if (targetCount == 0) return;
+
+        for (int i = 0; i < targetCount; i++)
+        {
+            SpawnOneForLevelDesign(forcedParent);
+        }
+
+#if UNITY_EDITOR
+        EditorUtility.SetDirty(this);
+#endif
+    }
+
+    void CacheManualSpawnReferences()
+    {
+        if (inheritFromParentSpawner && !_parent)
+            _parent = GetComponentInParent<AnimalSpawner>();
+
+        if (!_player)
+        {
+            string tag = (_parent && !string.IsNullOrEmpty(_parent.playerTag))
+                ? _parent.playerTag
+                : "Player";
+
+            var go = GameObject.FindGameObjectWithTag(tag);
+            _player = go ? go.transform : null;
+        }
+    }
+
+    void SpawnOneForLevelDesign(Transform forcedParent)
+    {
+        GameObject prefab = respectAggressiveCapFromParent
+            ? PickWeightedPrefabRespectingParentCap(prefabs)
+            : PickWeightedPrefab(prefabs);
+
+        if (!prefab) return;
+
+        if (!TryGetSpawnPosition(out Vector3 pos)) return;
+
+        Quaternion rot = GetFacing(pos);
+
+        Transform parentT = forcedParent;
+
+        if (!parentT)
+        {
+            if (spawnParentOverride)
+                parentT = spawnParentOverride;
+            else if (_parent && _parent.spawnParent)
+                parentT = _parent.spawnParent;
+            else
+                parentT = transform;
+        }
+
+        GameObject spawned = null;
+
+        if (Application.isPlaying)
+        {
+            spawned = PoolManager.Spawn(prefab, pos, rot, parentT);
+        }
+        else
+        {
+#if UNITY_EDITOR
+            spawned = PrefabUtility.InstantiatePrefab(prefab, parentT) as GameObject;
+
+            if (spawned)
+            {
+                Undo.RegisterCreatedObjectUndo(spawned, "Spawn Animal For Level Design");
+                spawned.transform.SetPositionAndRotation(pos, rot);
+            }
+#else
+        spawned = Instantiate(prefab, pos, rot, parentT);
+#endif
+        }
+
+        if (!spawned) return;
+
+        _alive.Add(spawned);
+
+        var ai = spawned.GetComponent<CuteAnimalAI>();
+
+        if (ai && ai.aiType == CuteAnimalAI.AIType.AggressiveJumping)
+        {
+            if (!ai.fallbackJumpSpot)
+                ai.fallbackJumpSpot = this.transform;
+
+            ai.EnsureJumpSpotFallback();
+
+            Vector3 anchor = ResolveGroundAnchor(transform.position);
+            ai.SetJumpAnchor(anchor);
+        }
+
+        if (ai && ai.aiType == CuteAnimalAI.AIType.MigratingAi && migrationPath)
+        {
+            ai.ConfigureMigration(this, migrationPath);
+
+            var herd = GetComponent<MigrationHerd>();
+            if (!herd) herd = gameObject.AddComponent<MigrationHerd>();
+
+            herd.Register(ai);
+        }
+
+        if (ai && isPassiveType2 && ai.aiType == CuteAnimalAI.AIType.PassiveType2)
+        {
+            var guardianT = PickRandomGuardianTransform();
+            ai.guardian = guardianT;
+        }
+    }
+
 
     void Awake()
     {
