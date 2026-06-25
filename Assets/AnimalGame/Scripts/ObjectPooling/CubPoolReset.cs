@@ -30,7 +30,36 @@ public class CubPoolReset : MonoBehaviour, IPoolable
 
         if (agent)
         {
-            agent.enabled = true;
+            Vector3 intendedSpawnPosition = transform.position;
+            Quaternion intendedSpawnRotation = transform.rotation;
+
+            agent.updatePosition = false;
+            agent.updateRotation = false;
+
+            if (!agent.enabled)
+                agent.enabled = true;
+
+            if (NavMesh.SamplePosition(
+                    intendedSpawnPosition,
+                    out NavMeshHit hit,
+                    2f,
+                    NavMesh.AllAreas))
+            {
+                agent.Warp(hit.position);
+                agent.nextPosition = hit.position;
+
+                transform.SetPositionAndRotation(
+                    hit.position,
+                    intendedSpawnRotation
+                );
+            }
+            else
+            {
+                transform.SetPositionAndRotation(
+                    intendedSpawnPosition,
+                    intendedSpawnRotation
+                );
+            }
 
             if (agent.isOnNavMesh)
             {

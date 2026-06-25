@@ -14,6 +14,14 @@ public class BaseAdoptionPoint : MonoBehaviour
 
     private bool isAdopting;
 
+    private void Awake()
+    {
+        if(cubSpawnPoint != null) 
+        {
+            Debug.Log("CubSpawnPoint =" + cubSpawnPoint.position.ToString());
+        }
+    }
+
     private void OnTriggerEnter(Collider other)
     {
         PlayerCubCarrier carrier = other.GetComponentInChildren<PlayerCubCarrier>();
@@ -52,9 +60,7 @@ public class BaseAdoptionPoint : MonoBehaviour
             while (!reachedPoint)
                 yield return null;
 
-            Vector3 spawnPos = cubSpawnPoint
-                ? cubSpawnPoint.position
-                : walkTarget.position;
+            Vector3 spawnPos = cubSpawnPoint.position;
 
             Quaternion spawnRot = cubSpawnPoint
                 ? cubSpawnPoint.rotation
@@ -75,6 +81,7 @@ public class BaseAdoptionPoint : MonoBehaviour
             return;
 
         GameObject cubObj = PoolManager.Spawn(normalCubPrefab, position, rotation);
+        //GameObject cubObj = Instantiate(normalCubPrefab, position,rotation);
 
         AnimalCubAI cubAI = cubObj.GetComponent<AnimalCubAI>();
 

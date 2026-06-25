@@ -5,6 +5,20 @@ public class MeatPickup : MonoBehaviour
 {
     public bool canBePickedUp = true;
 
+    private void OnEnable()
+    {
+        canBePickedUp = true;
+
+        if (FoodCarrierDirector.Instance != null)
+            FoodCarrierDirector.Instance.RegisterMeat(gameObject);
+    }
+
+    private void OnDisable()
+    {
+        if (FoodCarrierDirector.Instance != null)
+            FoodCarrierDirector.Instance.UnregisterMeat(gameObject);
+    }
+
     private void Reset()
     {
         Collider col = GetComponent<Collider>();
@@ -26,6 +40,9 @@ public class MeatPickup : MonoBehaviour
         if (collected)
         {
             canBePickedUp = false;
+
+            if (FoodCarrierDirector.Instance != null)
+                FoodCarrierDirector.Instance.UnregisterMeat(gameObject);
         }
     }
 }

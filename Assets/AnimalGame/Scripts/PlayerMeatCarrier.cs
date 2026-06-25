@@ -15,6 +15,9 @@ public class PlayerMeatCarrier : MonoBehaviour
     public float verticalStackOffset = 0.25f;
     public float randomRotationAmount = 20f;
 
+    [Header("Player Thought UI")]
+    public PlayerThoughtUI thoughtUI;
+
     [Header("Pickup Tween Settings")]
     public float pickupMoveDuration = 0.35f;
     public float pickupJumpPower = 0.75f;
@@ -33,6 +36,9 @@ public class PlayerMeatCarrier : MonoBehaviour
     {
         if (cubCarrier == null)
             cubCarrier = GetComponent<PlayerCubCarrier>();
+
+        if (thoughtUI == null)
+            thoughtUI = GetComponentInChildren<PlayerThoughtUI>();
     }
 
     public bool TryCollectMeat(GameObject meatObject)
@@ -41,7 +47,13 @@ public class PlayerMeatCarrier : MonoBehaviour
             return false;
 
         if (IsFull || meatObject == null || meatPoint == null)
+        {
+            thoughtUI?.ShowFoodLimit();
             return false;
+        }
+
+        if (FoodCarrierDirector.Instance != null)
+            FoodCarrierDirector.Instance.UnregisterMeat(meatObject);
 
         carriedMeat.Add(meatObject);
 

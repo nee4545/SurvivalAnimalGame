@@ -4,7 +4,6 @@ using UnityEngine;
 public class LootDropper : MonoBehaviour, IPoolable
 {
     [Header("Prefabs (pooled)")]
-    public GameObject xpPrefab;
     public GameObject[] meatPrefabs;
 
     [Header("Counts")]
@@ -32,6 +31,15 @@ public class LootDropper : MonoBehaviour, IPoolable
 
     [Header("Drop Delay")]
     public float dropDelay = 0.10f;
+
+    [Header("Kill Rewards")]
+    public int xpReward = 25;
+    public int coinReward = 5;
+
+    [Header("Reward UI")]
+    public bool playXPUIEffect = true;
+    public bool playCoinUIEffect = true;
+    public Vector3 rewardUIWorldOffset = new Vector3(0f, 1.5f, 0f);
 
     public Transform lootOrigin;
 
@@ -62,36 +70,34 @@ public class LootDropper : MonoBehaviour, IPoolable
         if (dropDelay > 0f)
             yield return new WaitForSeconds(dropDelay);
 
-        // ---------------- XP DROP ----------------
-        if (xpPrefab)
+        CCActor player = FindObjectOfType<CCActor>();
+
+        Vector3 rewardWorldPos = origin + rewardUIWorldOffset;
+
+        if (player != null)
         {
-            Vector3 xpPos = GetGroundPoint(origin);
-            xpPos.y += 1f;
-            Vector3 rotation = new Vector3(-90,0,0);
-
-            int numDrops = Random.Range(5, 10);
-
-            for (int i = 0; i < numDrops; i++) 
+            if (xpReward > 0)
             {
-                var xp = PoolManager.Spawn(xpPrefab, xpPos, Quaternion.Euler(rotation));
-                SetupPickup(xp, xpLifetime);
+                player.AddXP(xpReward);
 
-                Vector3 startPos = origin;
+                Vector3 finalXpPosition = player.transform.position + new Vector3(0, 1, 0);
 
-                // Random direction and distance around the origin
-                float distance = Random.Range(0.5f, scatterRadius);
-                float angle = Random.Range(0f, Mathf.PI * 2f);
-                Vector3 dir = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
-
-                // Flat target position around the body
-                Vector3 flatTarget = origin + dir * distance;
-                Vector3 targetPos = GetGroundPoint(flatTarget);
-
-                CoroutineRunner.I.StartCoroutine(ParabolicDrop(xp, startPos, targetPos));
-                yield return null;
+                if (playXPUIEffect && UIXPFlyEffect.Instance != null)
+                {
+                    UIXPFlyEffect.Instance.PlayXPReward(finalXpPosition, xpReward);
+                }
             }
 
-            // XP does not need an arc; it can just appear on ground
+            if (coinReward > 0)
+            {
+                player.AddCoins(coinReward);
+
+                // Replace UICoinFlyEffect with your actual coin UI effect script name/method.
+                if (playCoinUIEffect && UICoinFlyEffect.Instance != null)
+                {
+                    UICoinFlyEffect.Instance.PlayCoinReward(rewardWorldPos, coinReward);
+                }
+            }
         }
 
         // ---------------- MEAT DROPS ----------------

@@ -43,6 +43,10 @@ public class OrphanCubAI : MonoBehaviour
     public GameObject loveEmoji;
     public TextMeshProUGUI emotionText;
 
+    [Header("Player Thought Cooldown")]
+    public float baseFullThoughtCooldown = 1.5f;
+    private float nextBaseFullThoughtTime;
+
     [Header("UI")]
     public GameObject healthBarObject;
 
@@ -159,15 +163,29 @@ public class OrphanCubAI : MonoBehaviour
         if (!player || !playerCarrier || !baseCubManager)
             return;
 
-        if (!baseCubManager.HasSpace)
-            return;
-
-        if (playerCarrier.IsFull)
-            return;
-
         float distance = Vector3.Distance(transform.position, player.position);
 
+        // Important:
+        // Do not show any adoption warning unless player is actually near this orphan.
         if (distance > adoptionDistance)
+            return;
+
+        if (!baseCubManager.HasSpace)
+        {
+            if (Time.time >= nextBaseFullThoughtTime)
+            {
+                PlayerThoughtUI thoughtUI = player.GetComponentInChildren<PlayerThoughtUI>();
+
+                if (thoughtUI)
+                    thoughtUI.ShowBaseFull();
+
+                nextBaseFullThoughtTime = Time.time + baseFullThoughtCooldown;
+            }
+
+            return;
+        }
+
+        if (playerCarrier.IsFull)
             return;
 
         bool adopted = playerCarrier.TryCarryCub(this);

@@ -32,6 +32,24 @@ public class AnimalSpawnPoint : MonoBehaviour
     [Header("Facing (optional override)")]
     public FaceMode faceMode = FaceMode.UseSpawner;
 
+    [Header("Charging AI Detection Sector")]
+    [Tooltip("Overrides detection for AggressiveType1 animals spawned by this point.")]
+    public bool overrideChargingAISector;
+
+    [Tooltip("Optional sector origin. Defaults to this spawn point.")]
+    public Transform chargeSectorOrigin;
+
+    [Min(0.1f)]
+    public float chargeSectorRange = 35f;
+
+    [Range(1f, 180f)]
+    public float chargeSectorAngle = 40f;
+
+    public bool showChargeSectorGizmo = true;
+
+    public Color chargeSectorGizmoColor =
+        new Color(1f, 0.15f, 0.05f, 0.2f);
+
     [Header("Player Separation (optional override)")]
     [Tooltip("If >= 0, overrides the spawner’s minDistanceFromPlayer for this point.")]
     public float minDistanceFromPlayer = -1f;
@@ -144,6 +162,130 @@ public class AnimalSpawnPoint : MonoBehaviour
                 Gizmos.matrix = Matrix4x4.identity;
             }
         }
+
+#if UNITY_EDITOR
+        DrawChargingSectorGizmo();
+#endif
+    }
+
+#if UNITY_EDITOR
+    void DrawChargingSectorGizmo()
+    {
+        if (!showChargeSectorGizmo ||
+            !overrideChargingAISector ||
+            !HasChargingPrefab())
+        {
+            return;
+        }
+
+        Transform originTransform =
+            chargeSectorOrigin != null
+                ? chargeSectorOrigin
+                : transform;
+
+        Vector3 origin = originTransform.position;
+
+        Vector3 forward = originTransform.forward;
+        forward.y = 0f;
+
+        if (forward.sqrMagnitude < 0.001f)
+            forward = Vector3.forward;
+
+        forward.Normalize();
+
+        float range = Mathf.Max(
+            0.1f,
+            chargeSectorRange
+        );
+
+        float angle = Mathf.Clamp(
+            chargeSectorAngle,
+            1f,
+            180f
+        );
+
+        float halfAngle = angle * 0.5f;
+
+        Vector3 leftDirection =
+            Quaternion.AngleAxis(
+                -halfAngle,
+                Vector3.up
+            ) * forward;
+
+        Color fillColor = chargeSectorGizmoColor;
+        fillColor.a = Mathf.Clamp01(fillColor.a);
+
+        Handles.color = fillColor;
+
+        Handles.DrawSolidArc(
+            origin,
+            Vector3.up,
+            leftDirection,
+            angle,
+            range
+        );
+
+        Color edgeColor = chargeSectorGizmoColor;
+        edgeColor.a = 1f;
+
+        Handles.color = edgeColor;
+
+        Vector3 leftPoint =
+            origin + leftDirection * range;
+
+        Vector3 rightDirection =
+            Quaternion.AngleAxis(
+                halfAngle,
+                Vector3.up
+            ) * forward;
+
+        Vector3 rightPoint =
+            origin + rightDirection * range;
+
+        Handles.DrawLine(origin, leftPoint);
+        Handles.DrawLine(origin, rightPoint);
+
+        Handles.DrawLine(
+            origin,
+            origin + forward * range
+        );
+
+        Gizmos.color = edgeColor;
+        Gizmos.DrawWireSphere(origin, 0.4f);
+    }
+#endif
+
+    bool HasChargingPrefab()
+    {
+        return ContainsChargingPrefab(prefabs) ||
+               ContainsChargingPrefab(guardianPrefabs);
+    }
+
+    bool ContainsChargingPrefab(
+        List<WeightedPrefab> prefabList)
+    {
+        if (prefabList == null)
+            return false;
+
+        for (int i = 0; i < prefabList.Count; i++)
+        {
+            GameObject prefab = prefabList[i].prefab;
+
+            if (!prefab)
+                continue;
+
+            CuteAnimalAI ai =
+                prefab.GetComponent<CuteAnimalAI>();
+
+            if (ai != null &&
+                ai.aiType ==
+                CuteAnimalAI.AIType.AggressiveType1)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     GameObject PickGuardianPrefab()
@@ -187,6 +329,35 @@ public class AnimalSpawnPoint : MonoBehaviour
         }
 
         return true;
+    }
+
+    void ApplyChargingAISettings(CuteAnimalAI ai)
+    {
+        if (!ai ||
+            ai.aiType != CuteAnimalAI.AIType.AggressiveType1)
+        {
+            return;
+        }
+
+        // Important for pooling: always overwrite previous settings.
+        ai.useChargeSectorDetection = overrideChargingAISector;
+
+        if (!overrideChargingAISector)
+        {
+            ai.chargeDetectionOrigin = null;
+            return;
+        }
+
+        ai.chargeDetectionOrigin =
+            chargeSectorOrigin != null
+                ? chargeSectorOrigin
+                : transform;
+
+        ai.chargeDetectionRange =
+            Mathf.Max(0.1f, chargeSectorRange);
+
+        ai.chargeDetectionAngle =
+            Mathf.Clamp(chargeSectorAngle, 1f, 180f);
     }
 
     void EnsureGuardians()
@@ -302,6 +473,8 @@ public class AnimalSpawnPoint : MonoBehaviour
         _alive.Add(spawned);
 
         var ai = spawned.GetComponent<CuteAnimalAI>();
+
+        ApplyChargingAISettings(ai);
 
         if (ai && ai.aiType == CuteAnimalAI.AIType.AggressiveJumping)
         {
@@ -486,6 +659,8 @@ public class AnimalSpawnPoint : MonoBehaviour
 
             // Migration hookup (if prefab is MigratingAi and this point has a path)
             var ai = go.GetComponent<CuteAnimalAI>();
+
+            ApplyChargingAISettings(ai);
 
             if (ai && ai.aiType == CuteAnimalAI.AIType.AggressiveJumping)
             {

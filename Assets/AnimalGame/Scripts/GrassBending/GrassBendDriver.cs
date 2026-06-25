@@ -20,6 +20,18 @@ public class GrassBendDriver : MonoBehaviour
     Vector3 _lastPos;
 
     void OnEnable() { _lastPos = transform.position; }
+
+    private void OnDisable()
+    {
+        ClearGrassBend();
+    }
+
+    private void ClearGrassBend()
+    {
+        Shader.SetGlobalFloat("_BendRadius", 0f);
+        Shader.SetGlobalFloat("_BendStrength", 0f);
+    }
+
     void LateUpdate()
     {
         var pos = transform.position;

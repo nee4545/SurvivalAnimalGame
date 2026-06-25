@@ -13,9 +13,10 @@ public class UIStatCard : MonoBehaviour
     public TextMeshProUGUI nextValueText;
     public TextMeshProUGUI costText;
     public Button upgradeButton;
+    public Image UpgradeIndicator;
 
-    [Header("Feedback")]
-    public UISpriteFeedbackAnimator affordabilityAnimator;
+    public Sprite CanUpgrade;
+    public Sprite CannotUpgrade;
 
     private CCActor player;
 
@@ -46,7 +47,7 @@ public class UIStatCard : MonoBehaviour
         if (stat == null) return;
 
         int cost = player.GetUpgradeCost(statType);
-        bool canAfford = player.storedMeat >= cost;
+        bool canAfford = player.Coins >= cost;
         bool canUpgradeNow = stat.CanUpgrade && canAfford;
 
         if (nameText != null)
@@ -61,18 +62,18 @@ public class UIStatCard : MonoBehaviour
         if (costText != null)
             costText.text = stat.CanUpgrade ? cost.ToString() : "-";
 
+        if(canUpgradeNow)
+        {
+            UpgradeIndicator.sprite = CanUpgrade;
+        }
+        else
+        {
+            UpgradeIndicator.sprite = CannotUpgrade;
+        }
+
         // Always keep button clickable so disabled feedback can play on click
         if (upgradeButton != null)
             upgradeButton.interactable = true;
-
-        // Only set idle sprite here
-        if (affordabilityAnimator != null)
-        {
-            if (canUpgradeNow)
-                affordabilityAnimator.SetEnabledIdle();
-            else
-                affordabilityAnimator.SetDisabledIdle();
-        }
     }
 
     public void OnUpgradePressed()
@@ -83,7 +84,7 @@ public class UIStatCard : MonoBehaviour
         if (stat == null) return;
 
         int cost = player.GetUpgradeCost(statType);
-        bool canAfford = player.storedMeat >= cost;
+        bool canAfford = player.Coins >= cost;
         bool canUpgradeNow = stat.CanUpgrade && canAfford;
 
         if (canUpgradeNow)
@@ -92,16 +93,9 @@ public class UIStatCard : MonoBehaviour
 
             if (upgraded)
             {
-                if (affordabilityAnimator != null)
-                    affordabilityAnimator.PlayEnabledFeedback();
 
                 Refresh();
             }
-        }
-        else
-        {
-            if (affordabilityAnimator != null)
-                affordabilityAnimator.PlayDisabledFeedback();
         }
     }
 
@@ -114,7 +108,7 @@ public class UIStatCard : MonoBehaviour
             case PlayerStatType.HungerDrainRate: return "Hunger Drain";
             case PlayerStatType.MaxHealth: return "Max Health";
             case PlayerStatType.AttackDamage: return "Attack Damage";
-            case PlayerStatType.CompnionLimit: return "Companion Limit";
+            case PlayerStatType.FoodCarryLimit: return "Food Carry Limit";
             default: return type.ToString();
         }
     }
@@ -130,7 +124,7 @@ public class UIStatCard : MonoBehaviour
 
             case PlayerStatType.MaxHealth:
             case PlayerStatType.AttackDamage:
-            case PlayerStatType.CompnionLimit:
+            case PlayerStatType.FoodCarryLimit:
                 return Mathf.RoundToInt(value).ToString();
 
             default:

@@ -12,7 +12,7 @@ public enum PlayerStatType
     HungerDrainRate,
     MaxHealth,
     AttackDamage,
-    CompnionLimit,
+    FoodCarryLimit,
 }
 
 [System.Serializable]
@@ -50,6 +50,9 @@ public class PlayerStat
 public class CCActor : MonoBehaviour
 {
     public StateMachine StateMachine { get; private set; }
+
+    [Header("Grass Interaction")]
+    public GrassBendDriver grassBendDriver;
 
     [Header("Input System")]
     public InputActionReference moveAction;
@@ -187,6 +190,8 @@ public class CCActor : MonoBehaviour
     [Header("Upgradeable Stats")]
     public List<PlayerStat> stats = new();
 
+    public int foodCarryLimit = 1;
+
     [HideInInspector] public float hunger;   // current hunger (0..maxHunger)
     public float Hunger01 => (maxHunger <= 0f) ? 0f : Mathf.Clamp01(hunger / maxHunger);
 
@@ -197,10 +202,6 @@ public class CCActor : MonoBehaviour
     public bool isInParabola = false;
 
     [HideInInspector] public bool isSlowMotionHuntActive = false;
-
-    public int companionLimit = 1;
-
-
 
     private float defaultStepOffset;
 
@@ -229,6 +230,34 @@ public class CCActor : MonoBehaviour
     public int storedMeat = 0;
 
     public event Action OnProgressChanged;
+
+
+    [Header("Currency")]
+    [SerializeField] private int coins = 0;
+
+    public int Coins => coins;
+    public int StoredMeat => coins; // temporary backwards compatibility if older UI still reads StoredMeat
+
+    public void AddCoins(int amount)
+    {
+        if (amount <= 0)
+            return;
+
+        coins += amount;
+    }
+
+    public bool TrySpendCoins(int amount)
+    {
+        if (amount <= 0)
+            return true;
+
+        if (coins < amount)
+            return false;
+
+        coins -= amount;
+        NotifyProgressChanged();
+        return true;
+    }
 
 
     public int XPToNextLevel
@@ -266,20 +295,13 @@ public class CCActor : MonoBehaviour
 
     public void AddMeat(int amount)
     {
-        if (amount <= 0) return;
-
-        storedMeat += amount;
+        AddCoins(amount);
         NotifyProgressChanged();
     }
 
     public bool TrySpendMeat(int amount)
     {
-        if (amount <= 0) return true;
-        if (storedMeat < amount) return false;
-
-        storedMeat -= amount;
-        NotifyProgressChanged();
-        return true;
+        return TrySpendCoins(amount);
     }
 
     private void LevelUp()
@@ -481,6 +503,9 @@ public class CCActor : MonoBehaviour
 
     void Awake()
     {
+        if (grassBendDriver == null)
+            grassBendDriver = GetComponent<GrassBendDriver>();
+
         // CharacterController
         controller = GetComponent<CharacterController>() ?? gameObject.AddComponent<CharacterController>();
 
@@ -508,6 +533,28 @@ public class CCActor : MonoBehaviour
 
     }
 
+
+    private void UpdateGrassBendState()
+    {
+        if (grassBendDriver == null)
+            return;
+
+        bool controllerReady =
+            controller != null &&
+            controller.enabled;
+
+        bool grounded =
+            controllerReady &&
+            controller.isGrounded;
+
+        bool shouldEnableGrassBend =
+            !isDead &&
+            !isInParabola &&
+            grounded;
+
+        if (grassBendDriver.enabled != shouldEnableGrassBend)
+            grassBendDriver.enabled = shouldEnableGrassBend;
+    }
 
     void ReadMovementInput()
     {
@@ -554,8 +601,8 @@ public class CCActor : MonoBehaviour
                 perLevelIncrease = 3f
             },
              new PlayerStat {
-                type = PlayerStatType.CompnionLimit,
-                baseValue = companionLimit,
+                type = PlayerStatType.FoodCarryLimit,
+                baseValue = foodCarryLimit,
                 perLevelIncrease = 1f
             }
         };
@@ -589,9 +636,14 @@ public class CCActor : MonoBehaviour
                 case PlayerStatType.AttackDamage:
                     attackDamage = Mathf.RoundToInt(stat.CurrentValue);
                     break;
-                case PlayerStatType.CompnionLimit:
-                    companionLimit = Mathf.RoundToInt(stat.CurrentValue);
-                    break;
+                case PlayerStatType.FoodCarryLimit:
+                    {
+                        foodCarryLimit = Mathf.RoundToInt(stat.CurrentValue);
+                        PlayerMeatCarrier meatCarrier = GetComponent<PlayerMeatCarrier>();
+                        meatCarrier.maxCarryAmount = foodCarryLimit;
+                        break;
+
+                    }
             }
         }
     }
@@ -747,6 +799,7 @@ public class CCActor : MonoBehaviour
 
     void Update()
     {
+        UpdateGrassBendState();
         if (isDead) return;
         if (isInParabola) return;
         if (isSlowMotionHuntActive) return;
@@ -871,6 +924,11 @@ public class CCActor : MonoBehaviour
                             Vector3 kb = (t.position - transform.position).normalized;
                             ai.ApplyKnockback(kb);
                         }
+
+                        FoodThiefAI thief = t.GetComponent<FoodThiefAI>();
+
+                        if (thief)
+                            thief.NotifyAttackedByPlayer(transform);
                     }
 
                     autoAttackTimer = autoAttackCooldown;

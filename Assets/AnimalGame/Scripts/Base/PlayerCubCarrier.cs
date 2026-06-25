@@ -14,6 +14,9 @@ public class PlayerCubCarrier : MonoBehaviour
     [Header("Carry Conflict")]
     public PlayerMeatCarrier meatCarrier;
 
+    [Header("Player Thought UI")]
+    public PlayerThoughtUI thoughtUI;
+
     [Header("Pickup Tween")]
     public float pickupDuration = 0.45f;
     public float pickupJumpPower = 1.2f;
@@ -29,12 +32,18 @@ public class PlayerCubCarrier : MonoBehaviour
     {
         if (meatCarrier == null)
             meatCarrier = GetComponent<PlayerMeatCarrier>();
+
+        if (thoughtUI == null)
+            thoughtUI = GetComponentInChildren<PlayerThoughtUI>();
     }
 
     public bool TryCarryCub(OrphanCubAI cub)
     {
         if (meatCarrier != null && meatCarrier.HasMeat)
+        {
+            thoughtUI?.ShowCantCarryCub();
             return false;
+        }
 
         if (IsFull || cub == null || cubCarryPoint == null)
             return false;

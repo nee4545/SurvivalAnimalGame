@@ -77,4 +77,14 @@ public class UISpriteFeedbackAnimator : MonoBehaviour
         targetImage.sprite = finalSprite;
         animationRoutine = null;
     }
+
+    void PlayTest()
+    {
+        PlayOnce(enabledAnimation, enabledIdleSprite);
+    }
+
+    private void Awake()
+    {
+        InvokeRepeating("PlayTest", 1f,1f);
+    }
 }

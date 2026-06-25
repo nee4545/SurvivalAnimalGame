@@ -68,7 +68,7 @@ public class SlowMotionHuntTriggerZone : MonoBehaviour
 
     private void OnTriggerEnter(Collider other)
     {
-        CCActor actor = other.GetComponentInParent<CCActor>();
+        CCActor actor = other.GetComponentInParent<CCActor>();   
         if (!actor) return;
 
         SlowMotionHuntController hunt = actor.GetComponent<SlowMotionHuntController>();

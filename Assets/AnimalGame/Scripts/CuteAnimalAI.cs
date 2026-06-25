@@ -270,6 +270,16 @@ public class CuteAnimalAI : MonoBehaviour
     public float chargeCooldownDuration = 4f;
     public float chargeDetectionRange = 5f;
 
+    [Header("🐗 Charge Sector Detection")]
+    [Tooltip("When enabled, the charging AI only detects the player inside a forward-facing sector.")]
+    public bool useChargeSectorDetection;
+
+    [Tooltip("Usually assigned by the AnimalSpawnPoint.")]
+    public Transform chargeDetectionOrigin;
+
+    [Range(1f, 180f)]
+    [Tooltip("Full width of the detection sector.")]
+    public float chargeDetectionAngle = 45f;
 
     [Header("🦬 Migration")]
     public MigrationPath migrationPath;
@@ -387,6 +397,17 @@ public class CuteAnimalAI : MonoBehaviour
     public bool shouldDoParabolicknockback = false;
     [Tooltip("Horizontal distance the player is pushed back on a charge hit.")]
     public float playerKnockbackDistance = 10f;
+
+    [Range(0f, 100f)]
+    [Tooltip("Percentage chance that a successful melee attack knocks the player back.")]
+    public float playerKnockbackChance = 35f;
+
+    [Range(0f, 180f)]
+    [Tooltip(
+        "Maximum angle from the AI's forward direction. " +
+        "60 means a 120-degree total front-facing cone."
+    )]
+    public float playerKnockbackFrontAngle = 60f;
 
     [Tooltip("Peak height of the player's knockback arc.")]
     public float playerKnockbackHeight = 5f;
@@ -712,13 +733,56 @@ public class CuteAnimalAI : MonoBehaviour
         }
     }
 
-    public bool ShouldDoParabolicPlayerKnockback()
+    public bool ShouldDoParabolicPlayerKnockback(Transform target)
     {
         if (!shouldDoParabolicknockback)
             return false;
 
-        return aiType == AIType.Aggressive ||
-               aiType == AIType.AggressiveType2;
+        bool validAIType =
+            aiType == AIType.Aggressive ||
+            aiType == AIType.AggressiveType2;
+
+        if (!validAIType || target == null)
+            return false;
+
+        CCActor playerActor = target.GetComponentInParent<CCActor>();
+
+        if (playerActor == null ||
+            playerActor.isDead ||
+            playerActor.isInParabola)
+        {
+            return false;
+        }
+
+        Vector3 forward = transform.forward;
+        forward.y = 0f;
+
+        Vector3 toPlayer =
+            playerActor.transform.position - transform.position;
+
+        toPlayer.y = 0f;
+
+        if (forward.sqrMagnitude < 0.001f ||
+            toPlayer.sqrMagnitude < 0.001f)
+        {
+            return false;
+        }
+
+        forward.Normalize();
+        toPlayer.Normalize();
+
+        float angleToPlayer = Vector3.Angle(
+            forward,
+            toPlayer
+        );
+
+        if (angleToPlayer > playerKnockbackFrontAngle)
+            return false;
+
+        float chance01 =
+            Mathf.Clamp01(playerKnockbackChance / 100f);
+
+        return UnityEngine.Random.value <= chance01;
     }
 
     public void SetActivityMode(AIActivityMode mode)
@@ -1461,6 +1525,51 @@ public class CuteAnimalAI : MonoBehaviour
     {
         if (!t) return false;
         return Vector3.Distance(spawnPosition, t.position) > aggressiveTerritoryRadius;
+    }
+
+
+    public bool CanDetectPlayerForCharge()
+    {
+        if (player == null)
+            return false;
+
+        // Preserve the old circular detection when sector detection is disabled.
+        if (!useChargeSectorDetection)
+        {
+            return Vector3.SqrMagnitude(
+                player.position - transform.position
+            ) <= chargeDetectionRange * chargeDetectionRange;
+        }
+
+        Transform origin = chargeDetectionOrigin != null
+            ? chargeDetectionOrigin
+            : transform;
+
+        Vector3 toPlayer = player.position - origin.position;
+        toPlayer.y = 0f;
+
+        float range = Mathf.Max(0.1f, chargeDetectionRange);
+
+        if (toPlayer.sqrMagnitude > range * range)
+            return false;
+
+        // Player is practically standing on the origin.
+        if (toPlayer.sqrMagnitude < 0.001f)
+            return true;
+
+        Vector3 sectorForward = origin.forward;
+        sectorForward.y = 0f;
+
+        if (sectorForward.sqrMagnitude < 0.001f)
+            sectorForward = transform.forward.Flat();
+
+        sectorForward.Normalize();
+        toPlayer.Normalize();
+
+        float halfAngle = chargeDetectionAngle * 0.5f;
+        float minimumDot = Mathf.Cos(halfAngle * Mathf.Deg2Rad);
+
+        return Vector3.Dot(sectorForward, toPlayer) >= minimumDot;
     }
 
     private void StuckTick()
@@ -2981,7 +3090,7 @@ public class AIRestState : IState
         }
         else if (ai.aiType == AIType.AggressiveType1)
         {
-            if (!ai.isChargeCooldownActive && ai.currentChargeAttempts < ai.maxChargeAttempts && threatDistance <= ai.chargeDetectionRange)
+            if (!ai.isChargeCooldownActive && ai.currentChargeAttempts < ai.maxChargeAttempts && ai.CanDetectPlayerForCharge())
             {
                 ai.agent.isStopped = true;
                 ai.StateMachine.ChangeState(ai._windupState);
@@ -3384,7 +3493,9 @@ public class AIWanderState : IState
 
         if (ai.aiType == AIType.AggressiveType1)
         {
-            if (!ai.isChargeCooldownActive && ai.currentChargeAttempts < ai.maxChargeAttempts && threatDistance <= ai.chargeDetectionRange)
+            if (!ai.isChargeCooldownActive &&
+    ai.currentChargeAttempts < ai.maxChargeAttempts &&
+    ai.CanDetectPlayerForCharge())
             {
                 ai.StateMachine.ChangeState(ai._windupState);
                 return;
@@ -4154,20 +4265,24 @@ public class AIAttackState : IState
                     effects.PlayBloodVFX();
 
                 // Big animal polish: launch player backward in a parabolic arc.
-                if (ai.ShouldDoParabolicPlayerKnockback())
+                CCActor playerActor =
+    attackTarget.GetComponentInParent<CCActor>();
+
+                if (playerActor != null &&
+                    ai.ShouldDoParabolicPlayerKnockback(
+                        playerActor.transform
+                    ))
                 {
-                    CCActor playerActor = attackTarget.GetComponent<CCActor>();
+                    Vector3 knockDir =
+                        playerActor.transform.position -
+                        ai.transform.position;
 
-                    if (playerActor != null)
-                    {
-                        Vector3 knockDir = attackTarget.position - ai.transform.position;
-                        knockDir.y = 0f;
+                    knockDir.y = 0f;
 
-                        if (knockDir.sqrMagnitude < 0.001f)
-                            knockDir = ai.transform.forward;
+                    if (knockDir.sqrMagnitude < 0.001f)
+                        knockDir = ai.transform.forward;
 
-                        ai.StartPlayerKnockback(knockDir);
-                    }
+                    ai.StartPlayerKnockback(knockDir);
                 }
 
             }
@@ -5142,25 +5257,40 @@ public class AIReturnToBaseState : IState
             return;
         }
 
-        // 3) Charger (AggressiveType1) – can still react while returning home.
+        // 3) Charger (AggressiveType1) – sector-based detection.
         if (ai.aiType == AIType.AggressiveType1)
         {
             if (!ai.player)
                 return;
 
-            dist = ai.DistanceToPlayer();
-
-            // If on cooldown, this type explicitly should *not* re-engage.
+            // Charger should not re-engage during its cooldown.
             if (ai.isChargeCooldownActive)
                 return;
 
-            // If very close, allow a melee bite.
+            // Player must be inside the spawn-point-controlled sector.
+            if (!ai.CanDetectPlayerForCharge())
+                return;
+
+            dist = ai.DistanceToPlayer();
+
+            // Preserve the existing close-range bite behaviour,
+            // but only when the player is inside the detection sector.
             if (dist <= ai.attackRange)
             {
                 ai.agent.isStopped = false;
                 ai.StateMachine.ChangeState(ai._attackState);
                 return;
             }
+
+            // Otherwise begin another charge if attempts remain.
+            if (ai.currentChargeAttempts < ai.maxChargeAttempts)
+            {
+                ai.agent.isStopped = true;
+                ai.StateMachine.ChangeState(ai._windupState);
+                return;
+            }
+
+            return;
         }
 
         // 4) Retaliator (AggressiveType2) – only hunts if provoked.

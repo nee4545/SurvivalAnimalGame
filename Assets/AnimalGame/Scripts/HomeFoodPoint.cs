@@ -144,6 +144,18 @@ public class HomeFoodPoint : MonoBehaviour
         }
     }
 
+    public bool TryStoreExternalMeat(GameObject meat)
+    {
+        if (meat == null)
+            return false;
+
+        if (storedMeat.Count >= maxFoodCapacity)
+            return false;
+
+        StoreMeat(meat);
+        return true;
+    }
+
     private Vector3 GetSlotWorldPosition(int slotIndex)
     {
         if (foodStackPoint == null)

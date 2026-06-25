@@ -32,8 +32,14 @@ public class CameraObstructionFade : MonoBehaviour
         RaycastHit[] hits = Physics.RaycastAll(from, (to - from).normalized, dist, terrainLayer);
         foreach (var hit in hits)
         {
+            if (hit.collider.GetComponentInParent<CameraFadeIgnore>())
+                continue;
+
             Renderer rend = hit.collider.GetComponent<Renderer>();
             if (!rend) continue;
+
+            if (rend.GetComponentInParent<CameraFadeIgnore>())
+                continue;
 
             hitsThisFrame.Add(rend);
 

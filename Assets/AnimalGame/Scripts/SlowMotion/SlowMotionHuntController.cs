@@ -224,6 +224,11 @@ public class SlowMotionHuntController : MonoBehaviour
         RestoreTime();
     }
 
+    public bool IsHuntGoingOn()
+    {
+        return isActive;
+    }
+
     private IEnumerator PlayHuntCameraPreview()
     {
         if (!useHuntCameraPreview || mainCamera == null)
@@ -282,10 +287,12 @@ public class SlowMotionHuntController : MonoBehaviour
         if (!isActive)
         {
 
-            UpdateAutoHuntTrigger();
+            //UpdateAutoHuntTrigger();
+            if(currentZone != null)
+                TryStartSlowMotionHunt();
 
-           // if (slowHuntAction != null /*&& slowHuntAction.action.triggered*/)
-            TryStartSlowMotionHunt();
+            //if (slowHuntAction != null && slowHuntAction.action.triggered)
+            //    TryStartSlowMotionHunt();
 
             return;
         }
