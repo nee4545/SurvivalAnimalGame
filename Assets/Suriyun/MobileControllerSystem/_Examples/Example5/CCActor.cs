@@ -51,6 +51,8 @@ public class CCActor : MonoBehaviour
 {
     public StateMachine StateMachine { get; private set; }
 
+    public StampedeMiniGameController StampedeController;
+
     [Header("Grass Interaction")]
     public GrassBendDriver grassBendDriver;
 
@@ -538,6 +540,15 @@ public class CCActor : MonoBehaviour
     {
         if (grassBendDriver == null)
             return;
+
+        if(StampedeController!=null)
+        {
+            if(StampedeController.IsRunning)
+            {
+                grassBendDriver.enabled = true;
+                return;
+            }
+        }
 
         bool controllerReady =
             controller != null &&

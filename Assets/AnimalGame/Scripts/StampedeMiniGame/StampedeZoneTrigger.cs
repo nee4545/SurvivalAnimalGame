@@ -5,6 +5,9 @@ public class StampedeZoneTrigger : MonoBehaviour
     public bool oneTimeUse = false;
     public string playerTag = "Player";
 
+    [Header("Stampede Config")]
+    public StampedeRunConfig runConfig;
+
     [Header("Re-trigger Safety")]
     public bool mustExitBeforeRestart = true;
 
@@ -43,7 +46,7 @@ public class StampedeZoneTrigger : MonoBehaviour
         used = true;
         waitingForPlayerExit = true;
 
-        controller.StartStampedeMiniGame();
+        controller.StartStampedeMiniGame(runConfig);
     }
 
     private void OnTriggerExit(Collider other)

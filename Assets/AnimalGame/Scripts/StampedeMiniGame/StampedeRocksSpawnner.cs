@@ -1,3 +1,4 @@
+using DG.Tweening;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -27,6 +28,17 @@ public class StampedeRocksSpawnner : MonoBehaviour
     [Header("Direction Variation")]
     public bool hazardMovesTowardPlayer = true;
 
+    [Header("Direction Specific Spawn Distance")]
+    public bool useDirectionSpecificSpawnDistance = true;
+    public float normalSpawnDistanceFromPlayer = 32f;
+    public float invertedSpawnDistanceFromPlayer = 45f;
+
+    [Header("Prop Spawn Reservation")]
+    public bool usePropSpawnReservation = true;
+    public float propReservationForwardSeparation = 10f;
+    public float propReservationSideSeparation = 3f;
+    public float propReservationLifetime = 1.5f;
+
     [Header("Debug")]
     public bool debugLogs;
 
@@ -43,6 +55,9 @@ public class StampedeRocksSpawnner : MonoBehaviour
         StampedeLaneController lane
     )
     {
+        if (!enabled)
+            return;
+
         controller = miniGameController;
         laneController = lane;
 
@@ -60,7 +75,18 @@ public class StampedeRocksSpawnner : MonoBehaviour
             Debug.Log("[StampedeHazardSpawner] Started.");
     }
 
-    public void StopSpawningAndClear()
+    private float GetCurrentSpawnDistance()
+    {
+        if (!useDirectionSpecificSpawnDistance)
+            return spawnDistanceFromPlayer;
+
+        if (laneController != null && laneController.faceAwayFromStampede)
+            return invertedSpawnDistanceFromPlayer;
+
+        return normalSpawnDistanceFromPlayer;
+    }
+
+    public void StopSpawningOnly()
     {
         if (spawnRoutine != null)
         {
@@ -68,6 +94,12 @@ public class StampedeRocksSpawnner : MonoBehaviour
             spawnRoutine = null;
         }
 
+        if (debugLogs)
+            Debug.Log("[StampedeRocksSpawnner] Stopped spawning only.");
+    }
+
+    public void ClearSpawnedRocks()
+    {
         for (int i = activeHazards.Count - 1; i >= 0; i--)
         {
             if (activeHazards[i] != null)
@@ -77,7 +109,13 @@ public class StampedeRocksSpawnner : MonoBehaviour
         activeHazards.Clear();
 
         if (debugLogs)
-            Debug.Log("[StampedeHazardSpawner] Stopped and cleared.");
+            Debug.Log("[StampedeRocksSpawnner] Cleared rocks.");
+    }
+
+    public void StopSpawningAndClear()
+    {
+        StopSpawningOnly();
+        ClearSpawnedRocks();
     }
 
     private IEnumerator SpawnRoutine()
@@ -92,6 +130,27 @@ public class StampedeRocksSpawnner : MonoBehaviour
             if (Random.value <= doubleRockChance)
                 SpawnRockOnRandomLane();
         }
+    }
+
+    public void ApplyRunConfig(StampedeRunConfig config)
+    {
+        if (config == null)
+            return;
+
+        enabled = config.enableRockHazards;
+
+        rockHazardPrefab = config.rockHazardPrefab;
+
+        spawnIntervalMin = config.rockSpawnIntervalMin;
+        spawnIntervalMax = config.rockSpawnIntervalMax;
+
+        useDirectionSpecificSpawnDistance = true;
+        normalSpawnDistanceFromPlayer = config.rockNormalSpawnDistanceFromPlayer;
+        invertedSpawnDistanceFromPlayer = config.rockInvertedSpawnDistanceFromPlayer;
+
+        doubleRockChance = config.doubleRockChance;
+
+        StopSpawningAndClear();
     }
 
     private void SpawnRockOnRandomLane()
@@ -113,10 +172,41 @@ public class StampedeRocksSpawnner : MonoBehaviour
         Vector3 lanePosition = laneController.GetLaneWorldPosition(lane);
 
         Vector3 spawnPosition =
-            lanePosition +
-            spawnDirection * spawnDistanceFromPlayer;
+    lanePosition +
+    spawnDirection * GetCurrentSpawnDistance();
 
         spawnPosition.y += rockYOffset;
+
+        if (usePropSpawnReservation)
+        {
+            Vector3 forward = laneController.GetForwardDirection();
+            forward.y = 0f;
+
+            if (forward.sqrMagnitude < 0.001f)
+                forward = Vector3.forward;
+
+            forward.Normalize();
+
+            Vector3 right = Vector3.Cross(Vector3.up, forward);
+            right.y = 0f;
+
+            if (right.sqrMagnitude < 0.001f)
+                right = Vector3.right;
+
+            right.Normalize();
+
+            bool reserved = StampedePropSpawnReservation.TryReserve(
+                spawnPosition,
+                forward,
+                right,
+                propReservationForwardSeparation,
+                propReservationSideSeparation,
+                propReservationLifetime
+            );
+
+            if (!reserved)
+                return;
+        }
 
         GameObject rock = Instantiate(
             rockHazardPrefab,
@@ -136,6 +226,8 @@ public class StampedeRocksSpawnner : MonoBehaviour
                 GetRockMoveSpeed()
             );
         }
+
+        StampedePropSpawnReservation.RegisterActiveProp(rock.transform);
 
         activeHazards.Add(rock);
 
@@ -187,5 +279,11 @@ public class StampedeRocksSpawnner : MonoBehaviour
             return worldScroller.GetCurrentScrollSpeed();
 
         return 15f;
+    }
+
+    private void OnDestroy()
+    {
+        StampedePropSpawnReservation.UnregisterActiveProp(transform);
+        transform.DOKill();
     }
 }

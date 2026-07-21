@@ -24,6 +24,38 @@ public class StampedeRunConfig
     [Header("Start Timing")]
     public float startDelay = 1f;
 
+    [Header("Rock Hazards")]
+    public bool enableRockHazards = true;
+    public GameObject rockHazardPrefab;
+
+    public float rockSpawnIntervalMin = 1.5f;
+    public float rockSpawnIntervalMax = 2.5f;
+
+    public float rockNormalSpawnDistanceFromPlayer = 32f;
+    public float rockInvertedSpawnDistanceFromPlayer = 45f;
+
+    [Header("Animal Clusters")]
+    public bool enableAnimalClusters = true;
+    public StampedeClusterAnimal[] clusterAnimalPrefabs;
+
+    public float clusterSpawnIntervalMin = 2.5f;
+    public float clusterSpawnIntervalMax = 4.5f;
+
+    public float clusterNormalSpawnDistanceFromPlayer = 28f;
+    public float clusterInvertedSpawnDistanceFromPlayer = 45f;
+
+    public int minAnimalsPerCluster = 3;
+    public int maxAnimalsPerCluster = 5;
+
+    public float clusterWidth = 2.2f;
+    public float clusterDepth = 2.8f;
+
+    public bool allowMultiLaneCluster = false;
+    public int maxLanesPerCluster = 1;
+
+    [Range(0f, 1f)]
+    public float doubleRockChance = 0.15f;
+
     [Header("Phased Spawn Tuning")]
     public bool usePhasedSpawnTuning = true;
 

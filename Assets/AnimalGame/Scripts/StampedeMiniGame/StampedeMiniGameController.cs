@@ -29,6 +29,9 @@ public class StampedeMiniGameController : MonoBehaviour
     public StampedeHazardSpawner hazardSpawner;
     public StampedeRocksSpawnner rocksSpawnner;
 
+    [Header("Visual Cluster Spawner")]
+    public StampedeAnimalClusterSpawner animalClusterSpawner;
+
     [Header("Stampede Direction Variation")]
     public bool alternateStampedeDirection = true;
 
@@ -48,6 +51,7 @@ public class StampedeMiniGameController : MonoBehaviour
 
     [Header("Rewards")]
     public int successXPReward = 100;
+    public int successCoinReward = 25;
 
     [Header("Objects To Disable During Stampede")]
     public GameObject[] objectsToDisableDuringStampede;
@@ -63,6 +67,9 @@ public class StampedeMiniGameController : MonoBehaviour
 
     [Header("World Scroller")]
     public StampedeWorldScroller worldScroller;
+
+    [Header("Grass Bend")]
+    public GrassBendDriver grassBendDriver;
 
     private bool[] objectsOriginalActiveStates;
 
@@ -90,7 +97,7 @@ public class StampedeMiniGameController : MonoBehaviour
         Instance = this;
     }
 
-    public void StartStampedeMiniGame()
+    public void StartStampedeMiniGame(StampedeRunConfig runConfig = null)
     {
         if (isRunning)
             return;
@@ -113,7 +120,48 @@ public class StampedeMiniGameController : MonoBehaviour
             return;
         }
 
+        ApplyRunConfig(runConfig);
+
+        if (grassBendDriver != null)
+        {
+            grassBendDriver.speedMode = GrassBendDriver.BendSpeedMode.StampedeWorldScroller;
+            grassBendDriver.stampedeWorldScroller = worldScroller;
+
+            grassBendDriver.baseRadius = 1.0f;
+            grassBendDriver.baseStrength = 0.25f;
+            grassBendDriver.speedRadiusBoost = 0.08f;
+            grassBendDriver.speedStrengthBoost = 0.035f;
+            grassBendDriver.useStampedeOriginOffset = true;
+            grassBendDriver.stampedeOriginOffsetDistance = 1.1f;
+        }
+
+        playerActor.GetComponent<StampedeTweenReactionEmitter>().enabled = true;
+
         routine = StartCoroutine(RunStampedeRoutine());
+    }
+
+    private void ApplyRunConfig(StampedeRunConfig runConfig)
+    {
+        if (runConfig == null)
+            return;
+
+        miniGameDuration = runConfig.miniGameDuration;
+        maxLives = runConfig.maxLives;
+
+        successXPReward = runConfig.successXPReward;
+        successCoinReward = runConfig.successCoinReward;
+
+        if (hazardSpawner != null)
+            hazardSpawner.ApplyRunConfig(runConfig);
+
+        if (rocksSpawnner != null)
+            rocksSpawnner.ApplyRunConfig(runConfig);
+
+        if (animalClusterSpawner != null)
+            animalClusterSpawner.ApplyRunConfig(runConfig);
+
+        if (debugLogs)
+            Debug.Log("[Stampede] Applied run config: " + runConfig.configName);
     }
 
 
@@ -158,6 +206,8 @@ public class StampedeMiniGameController : MonoBehaviour
 
         CacheOriginalState();
 
+        StampedePropSpawnReservation.Clear();
+
         PrepareStampedeDirectionVariation();
 
         EnterStampedeMode();
@@ -176,6 +226,9 @@ public class StampedeMiniGameController : MonoBehaviour
 
         if (rocksSpawnner != null)
             rocksSpawnner.BeginSpawning(this, laneController);
+
+        if (animalClusterSpawner != null)
+            animalClusterSpawner.BeginSpawning(this, laneController);
 
         remainingTime = miniGameDuration;
 
@@ -242,6 +295,8 @@ public class StampedeMiniGameController : MonoBehaviour
         if (!TryConsumeStampedeLife())
             return;
 
+        StampedeDamageScreenFeedback.Instance?.PlayHitFeedback();
+
         if (laneController != null)
             laneController.PlayHitReaction(hitDirection);
 
@@ -253,6 +308,8 @@ public class StampedeMiniGameController : MonoBehaviour
     {
         if (!TryConsumeStampedeLife())
             return;
+
+        StampedeDamageScreenFeedback.Instance?.PlayHitFeedback();
 
         if (laneController != null)
             laneController.PlayRockStumbleReaction(hitDirection);
@@ -291,10 +348,13 @@ public class StampedeMiniGameController : MonoBehaviour
 
         // Stop new hazards immediately, but let the player hit reaction finish.
         if (hazardSpawner != null)
-            hazardSpawner.StopSpawningAndClear();
+            hazardSpawner.StopSpawningOnly();
 
         if (rocksSpawnner != null)
-            rocksSpawnner.StopSpawningAndClear();
+            rocksSpawnner.StopSpawningOnly();
+
+        if (animalClusterSpawner != null)
+            animalClusterSpawner.StopSpawningOnly();
 
         if (delayedEndRoutine != null)
             StopCoroutine(delayedEndRoutine);
@@ -338,8 +398,22 @@ public class StampedeMiniGameController : MonoBehaviour
         // one of the optional cleanup systems above/below has a problem.
         RestorePlayerAfterStampede();
 
+        // Now that the player is safely back in the main world,
+        // remove stampede hazards from the mini game arena.
+        if (hazardSpawner != null)
+            hazardSpawner.ClearSpawnedHazards();
+
+        if (animalClusterSpawner != null)
+            animalClusterSpawner.StopSpawningAndClear();
+
+        if (rocksSpawnner != null)
+            rocksSpawnner.ClearSpawnedRocks();
+
+        playerActor.GetComponent<StampedeTweenReactionEmitter>().enabled = false;
+
         RestoreCamerasAfterStampede();
         RestoreStampedeBlockedObjects();
+        StampedePropSpawnReservation.Clear();
 
         if (stampedeModeUI != null)
             stampedeModeUI.Hide();
@@ -353,6 +427,17 @@ public class StampedeMiniGameController : MonoBehaviour
         {
             rewardGivenForThisRun = true;
             GiveRewards();
+        }
+
+        if (grassBendDriver != null)
+        {
+            grassBendDriver.speedMode = GrassBendDriver.BendSpeedMode.TransformMovement;
+            grassBendDriver.stampedeWorldScroller = null;
+            grassBendDriver.baseRadius = 1.0f;
+            grassBendDriver.baseStrength = 0.25f;
+            grassBendDriver.speedRadiusBoost = 0.055f;
+            grassBendDriver.speedStrengthBoost = 0.055f;
+            grassBendDriver.useStampedeOriginOffset = false;
         }
 
         if (debugLogs)
@@ -490,10 +575,12 @@ public class StampedeMiniGameController : MonoBehaviour
         if (playerActor != null)
         {
             playerActor.AddXP(successXPReward);
-
-            // Coin reward can be connected after we confirm your final coin method name.
-            // Example later:
-            // playerActor.AddCoins(successCoinReward);
+            playerActor.AddCoins(successCoinReward);
         }
+
+        // Coin reward can be connected after we confirm your final coin method name.
+        // Example later:
+        // playerActor.AddCoins(successCoinReward);
+    
     }
 }

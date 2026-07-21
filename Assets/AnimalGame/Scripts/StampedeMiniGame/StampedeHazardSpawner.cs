@@ -156,7 +156,46 @@ public class StampedeHazardSpawner : MonoBehaviour
             Debug.Log("[StampedeHazardSpawner] Started.");
     }
 
-    public void StopSpawningAndClear()
+    public void ApplyRunConfig(StampedeRunConfig runConfig)
+    {
+        if (runConfig == null)
+            return;
+
+        StopSpawningAndClear();
+        ClearPoolCompletely();
+
+        hazardPrefabs = runConfig.hazardPrefabs;
+
+        spawnDistanceFromLanes = runConfig.spawnDistanceFromLanes;
+        spawnHeightOffset = runConfig.spawnHeightOffset;
+
+        startDelay = runConfig.startDelay;
+
+        usePhasedSpawnTuning = runConfig.usePhasedSpawnTuning;
+
+        openingPhase = runConfig.openingPhase;
+        middlePhase = runConfig.middlePhase;
+        finalePhase = runConfig.finalePhase;
+
+        allowSameLaneBackToBack = runConfig.allowSameLaneBackToBack;
+        prewarmCount = runConfig.prewarmCount;
+
+        if (debugLogs)
+            Debug.Log("[StampedeHazardSpawner] Applied config: " + runConfig.configName);
+    }
+
+    private void ClearPoolCompletely()
+    {
+        pool.Clear();
+        spawned.Clear();
+
+        for (int i = transform.childCount - 1; i >= 0; i--)
+        {
+            Destroy(transform.GetChild(i).gameObject);
+        }
+    }
+
+    public void StopSpawningOnly()
     {
         isSpawning = false;
 
@@ -166,16 +205,35 @@ public class StampedeHazardSpawner : MonoBehaviour
             spawnRoutine = null;
         }
 
+        if (debugLogs)
+            Debug.Log("[StampedeHazardSpawner] Stopped spawning only.");
+    }
+
+    public void ClearSpawnedHazards()
+    {
         for (int i = spawned.Count - 1; i >= 0; i--)
         {
-            if (spawned[i] != null)
-                spawned[i].gameObject.SetActive(false);
+            StampedeHazardAI hazard = spawned[i];
+
+            if (hazard == null)
+                continue;
+
+            hazard.gameObject.SetActive(false);
+
+            if (!pool.Contains(hazard))
+                pool.Enqueue(hazard);
         }
 
         spawned.Clear();
 
         if (debugLogs)
-            Debug.Log("[StampedeHazardSpawner] Stopped.");
+            Debug.Log("[StampedeHazardSpawner] Cleared spawned hazards.");
+    }
+
+    public void StopSpawningAndClear()
+    {
+        StopSpawningOnly();
+        ClearSpawnedHazards();
     }
 
     private IEnumerator SpawnRoutine()

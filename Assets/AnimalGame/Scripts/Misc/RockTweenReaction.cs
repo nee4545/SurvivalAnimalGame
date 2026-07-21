@@ -25,6 +25,14 @@ public class RockTweenReaction : FoliageReactableBase
         startRot = transform.rotation;
     }
 
+    private void OnTriggerEnter(Collider other)
+    {
+        if (other.CompareTag("Player"))
+        {
+            React(other.transform.position);
+        }
+    }
+
     // 🔹 Called by PlayerFoliageScanner
     public override void React(Vector3 playerPos)
     {

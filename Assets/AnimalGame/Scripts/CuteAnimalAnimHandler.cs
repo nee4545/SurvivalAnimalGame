@@ -68,6 +68,8 @@ public class CuteAnimalAnimHandler : MonoBehaviour
     [Tooltip("Enable this for animals using the new PolyPerfect-style Animator (bool parameters).")]
     public bool isPolyPerfectAnimal = false;
 
+    public eCuteAnimalAnims StartingAnimation = eCuteAnimalAnims.IDLE;
+
     [Tooltip("Idle / stand / look-around variants.")]
     public AnimationBoolSet polyIdleSet;
 
@@ -114,7 +116,7 @@ public class CuteAnimalAnimHandler : MonoBehaviour
             CachePolyBoolParameters();
         }
 
-        SetAnimation(eCuteAnimalAnims.IDLE);
+        SetAnimation(StartingAnimation);
 
     }
 
@@ -535,7 +537,6 @@ public class CuteAnimalAnimHandler : MonoBehaviour
             case eCuteAnimalAnims.DAMAGE:
                 {
                     animator.SetInteger("animation", 7);
-                    StartCoroutine(LockAnimationRoutine(0.5f));
                     break;
                 }
 
