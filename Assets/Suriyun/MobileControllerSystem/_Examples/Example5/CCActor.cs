@@ -911,7 +911,11 @@ public class CCActor : MonoBehaviour
                 isAttackingLoop = true;
 
                 // Keep attack anim playing while target is valid
+                int randomNum = UnityEngine.Random.Range(0,5);
+
+             
                 animHandler?.SetAnimation(eCuteAnimalAnims.ATTACK);
+             
 
                 if (autoAttackTimer <= 0f)
                 {

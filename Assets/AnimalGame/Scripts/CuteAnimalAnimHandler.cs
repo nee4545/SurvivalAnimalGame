@@ -13,6 +13,7 @@ public enum eCuteAnimalAnims
     REST,
     EAT,
     DAMAGE,
+    SWIPE,
     NONE,
 }
 
@@ -564,6 +565,10 @@ public class CuteAnimalAnimHandler : MonoBehaviour
                     animator.SetInteger("animation", 5);
                     break;
                 }
+
+            case eCuteAnimalAnims.SWIPE:
+                animator.SetInteger("animation", 10);
+                break;
 
             case eCuteAnimalAnims.JUMP:
                 {

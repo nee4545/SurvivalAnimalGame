@@ -191,6 +191,11 @@ public class RiverRideableObject : MonoBehaviour
         }
     }
 
+    public RiverEscapePlayerController CurrentRider
+    {
+        get { return currentRider; }
+    }
+
     public bool HasRider
     {
         get { return currentRider != null; }

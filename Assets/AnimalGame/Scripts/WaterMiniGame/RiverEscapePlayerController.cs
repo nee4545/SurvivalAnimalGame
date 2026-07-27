@@ -117,6 +117,14 @@ public class RiverEscapePlayerController : MonoBehaviour
     public float expiredDismountForwardSpeed = 1.5f;
     public float expiredDismountUpSpeed = 1.2f;
 
+    [Header("Mounted Collision Jump")]
+    public bool allowCollisionJumpWhileMounted = true;
+
+    [Tooltip("Prevents repeated collision jumps from the same overlap.")]
+    public float mountedCollisionJumpCooldown = 0.35f;
+
+    private float lastMountedCollisionJumpTime = -999f;
+
     private float mountedRideTimeRemaining;
     private float mountedRideTimeTotal;
 
@@ -186,6 +194,35 @@ public class RiverEscapePlayerController : MonoBehaviour
         }
 
         MountRideableInstant(startingRideable);
+    }
+
+    public bool ForceJumpFromRideableCollision(RiverRideableObject hitRideable)
+    {
+        if (!allowCollisionJumpWhileMounted)
+            return false;
+
+        if (state != RiverPlayerState.Mounted)
+            return false;
+
+        if (currentRideable == null)
+            return false;
+
+        if (hitRideable == null)
+            return false;
+
+        if (hitRideable == currentRideable)
+            return false;
+
+        if (Time.time - lastMountedCollisionJumpTime <
+            mountedCollisionJumpCooldown)
+        {
+            return false;
+        }
+
+        lastMountedCollisionJumpTime = Time.time;
+
+        StartJump();
+        return true;
     }
 
     public void RespawnOnRideable(RiverRideableObject rideable)
