@@ -1,3 +1,49 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:7eb8e3ee213375f5835f596da774d7e956122958aeb88e85bf0f88857e59dbd4
-size 1141
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 42fb123bb649d3c4f9a8abbf21fc225a, type: 3}
+  m_Name: AIProfile
+  m_EditorClassIdentifier: 
+  aiType: 0
+  animalType: 0
+  enableFlocking: 0
+  wanderSpeed: 2
+  chaseSpeed: 4
+  fleeSpeed: 5
+  rotationSpeed: 90
+  detectionRange: 6
+  fleeRange: 5
+  stopDistance: 2
+  wanderRadius: 10
+  repulsionDistance: 2
+  repulsionStrength: 1.5
+  alignmentWeight: 1
+  cohesionWeight: 1
+  attackRange: 1.5
+  attackCooldown: 2
+  attackDamage: 10
+  wanderInterval: 4
+  knockbackDuration: 0.2
+  wanderPoints: []
+  herdPanicRadius: 10
+  fleeAttempts: 6
+  navMeshEdgeThreshold: 2
+  playerPredictionTime: 1.5
+  playerForwardPredictionDistance: 2
+  zigzagSpeed: 6
+  zigzagStrength: 0.5
+  herdJoinRadius: 15
+  herdPreferredDistance: 5
+  herdRegroupSpeed: 3
+  fleeBurstMultiplier: 1.5
+  fleeBurstDuration: 0.5
+  edgeBlendStrength: 0.4
+  edgeAwarenessBuffer: 1.5

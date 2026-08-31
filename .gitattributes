@@ -1,25 +1,187 @@
-*.tiff filter=lfs diff=lfs merge=lfs -text
-*.wav filter=lfs diff=lfs merge=lfs -text
-*.obj filter=lfs diff=lfs merge=lfs -text
-*.3ds filter=lfs diff=lfs merge=lfs -text
-*.dae filter=lfs diff=lfs merge=lfs -text
-*.controller filter=lfs diff=lfs merge=lfs -text
-*.jpeg filter=lfs diff=lfs merge=lfs -text
-*.jpg filter=lfs diff=lfs merge=lfs -text
-*.tga filter=lfs diff=lfs merge=lfs -text
-*.gif filter=lfs diff=lfs merge=lfs -text
-*.unity filter=lfs diff=lfs merge=lfs -text
-*.asset filter=lfs diff=lfs merge=lfs -text
-*.psd filter=lfs diff=lfs merge=lfs -text
-*.ogg filter=lfs diff=lfs merge=lfs -text
-*.mp4 filter=lfs diff=lfs merge=lfs -text
-*.ico filter=lfs diff=lfs merge=lfs -text
-*.tif filter=lfs diff=lfs merge=lfs -text
-*.bmp filter=lfs diff=lfs merge=lfs -text
-*.mp3 filter=lfs diff=lfs merge=lfs -text
-*.fbx filter=lfs diff=lfs merge=lfs -text
-*.anim filter=lfs diff=lfs merge=lfs -text
-*.prefab filter=lfs diff=lfs merge=lfs -text
-*.mat filter=lfs diff=lfs merge=lfs -text
-*.png filter=lfs diff=lfs merge=lfs -text
-*.mov filter=lfs diff=lfs merge=lfs -text
+# =============================================================================
+# Unity 2022.3 LTS  --  Git attributes
+#
+# Rule of thumb:
+#   Unity YAML (ForceText serialisation) is TEXT.  Text belongs in Git, never
+#   in LFS.  Git delta-compresses successive revisions of a YAML file down to
+#   the changed lines; LFS stores a whole fresh copy of the file on every
+#   single edit and destroys diff/merge along the way.
+#   Only genuinely opaque binaries belong in LFS.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Baseline
+# -----------------------------------------------------------------------------
+* text=auto
+
+# -----------------------------------------------------------------------------
+# Unity YAML  --  text, diffable, mergeable.  NOT LFS.
+# (Asset Serialization is Force Text: ProjectSettings/EditorSettings.asset
+#  m_SerializationMode: 2)
+# -----------------------------------------------------------------------------
+*.meta           text eol=lf
+*.unity          text eol=lf
+*.prefab         text eol=lf
+*.asset          text eol=lf
+*.mat            text eol=lf
+*.anim           text eol=lf
+*.controller     text eol=lf
+*.overrideController text eol=lf
+*.physicMaterial text eol=lf
+*.physicsMaterial2D text eol=lf
+*.playable       text eol=lf
+*.mask           text eol=lf
+*.brush          text eol=lf
+*.flare          text eol=lf
+*.fontsettings   text eol=lf
+*.guiskin        text eol=lf
+*.giparams       text eol=lf
+*.renderTexture  text eol=lf
+*.spriteatlas    text eol=lf
+*.terrainlayer   text eol=lf
+*.mixer          text eol=lf
+*.shadervariants text eol=lf
+*.preset         text eol=lf
+*.signal         text eol=lf
+*.cubemap        text eol=lf
+
+# -----------------------------------------------------------------------------
+# Oversized Unity YAML -- MUST stay in LFS despite being text.
+#
+# GitHub hard-rejects any non-LFS blob over 100 MB and warns over 50 MB.
+# JungleNew.prefab is 223 MB; taking it out of LFS makes the repo unpushable:
+#   remote: error: File ...JungleNew.prefab is 223.04 MB; this exceeds
+#   GitHub's file size limit of 100.00 MB
+# A prefab this large is not meaningfully mergeable anyway, so the diff/merge
+# benefit of plain text does not apply here.
+#
+# Bare names match the basename at any depth, same as the LightingData rule.
+# If any of these shrink below ~50 MB, delete its line so it becomes text.
+# -----------------------------------------------------------------------------
+JungleNew.prefab      filter=lfs diff=lfs merge=lfs -text
+SnowLevel.prefab      filter=lfs diff=lfs merge=lfs -text
+LevelJungle.prefab    filter=lfs diff=lfs merge=lfs -text
+JungleWater.prefab    filter=lfs diff=lfs merge=lfs -text
+ProtoTypePc.unity     filter=lfs diff=lfs merge=lfs -text
+Stegosaurus_Run.anim  filter=lfs diff=lfs merge=lfs -text
+
+# Unity writes these two as BINARY even under Force Text -- keep them in LFS.
+LightingData.asset      filter=lfs diff=lfs merge=lfs -text
+*/LightingData.asset    filter=lfs diff=lfs merge=lfs -text
+NavMesh.asset           filter=lfs diff=lfs merge=lfs -text
+*/NavMesh.asset         filter=lfs diff=lfs merge=lfs -text
+
+# -----------------------------------------------------------------------------
+# Source / config  --  text
+# -----------------------------------------------------------------------------
+*.cs             text eol=lf diff=csharp
+*.shader         text eol=lf
+*.cginc          text eol=lf
+*.hlsl           text eol=lf
+*.compute        text eol=lf
+*.shadergraph    text eol=lf
+*.shadersubgraph text eol=lf
+*.json           text eol=lf
+*.xml            text eol=lf
+*.txt            text eol=lf
+*.md             text eol=lf
+*.yml            text eol=lf
+*.yaml           text eol=lf
+*.svg            text eol=lf
+*.asmdef         text eol=lf
+*.asmref         text eol=lf
+*.uss            text eol=lf
+*.uxml           text eol=lf
+*.bat            text eol=crlf
+*.cmd            text eol=crlf
+*.sh             text eol=lf
+
+# -----------------------------------------------------------------------------
+# LFS  --  images
+# -----------------------------------------------------------------------------
+*.png    filter=lfs diff=lfs merge=lfs -text
+*.jpg    filter=lfs diff=lfs merge=lfs -text
+*.jpeg   filter=lfs diff=lfs merge=lfs -text
+*.gif    filter=lfs diff=lfs merge=lfs -text
+*.bmp    filter=lfs diff=lfs merge=lfs -text
+*.tga    filter=lfs diff=lfs merge=lfs -text
+*.tif    filter=lfs diff=lfs merge=lfs -text
+*.tiff   filter=lfs diff=lfs merge=lfs -text
+*.psd    filter=lfs diff=lfs merge=lfs -text
+# DEFERRED -- see note at end of file:  *.exr    filter=lfs diff=lfs merge=lfs -text
+*.hdr    filter=lfs diff=lfs merge=lfs -text
+*.dds    filter=lfs diff=lfs merge=lfs -text
+*.ico    filter=lfs diff=lfs merge=lfs -text
+*.iff    filter=lfs diff=lfs merge=lfs -text
+*.pict   filter=lfs diff=lfs merge=lfs -text
+*.webp   filter=lfs diff=lfs merge=lfs -text
+# DEFERRED -- see note at end of file:  *.ai     filter=lfs diff=lfs merge=lfs -text
+# DEFERRED -- see note at end of file:  *.eps    filter=lfs diff=lfs merge=lfs -text
+# DEFERRED -- see note at end of file:  *.pdf    filter=lfs diff=lfs merge=lfs -text
+
+# -----------------------------------------------------------------------------
+# LFS  --  3D
+# -----------------------------------------------------------------------------
+*.fbx    filter=lfs diff=lfs merge=lfs -text
+*.obj    filter=lfs diff=lfs merge=lfs -text
+*.dae    filter=lfs diff=lfs merge=lfs -text
+*.3ds    filter=lfs diff=lfs merge=lfs -text
+*.blend  filter=lfs diff=lfs merge=lfs -text
+*.max    filter=lfs diff=lfs merge=lfs -text
+*.ma     filter=lfs diff=lfs merge=lfs -text
+*.mb     filter=lfs diff=lfs merge=lfs -text
+*.c4d    filter=lfs diff=lfs merge=lfs -text
+*.abc    filter=lfs diff=lfs merge=lfs -text
+*.mesh   filter=lfs diff=lfs merge=lfs -text
+
+# -----------------------------------------------------------------------------
+# LFS  --  audio / video
+# -----------------------------------------------------------------------------
+*.wav    filter=lfs diff=lfs merge=lfs -text
+*.mp3    filter=lfs diff=lfs merge=lfs -text
+*.ogg    filter=lfs diff=lfs merge=lfs -text
+*.aif    filter=lfs diff=lfs merge=lfs -text
+*.aiff   filter=lfs diff=lfs merge=lfs -text
+*.flac   filter=lfs diff=lfs merge=lfs -text
+*.mp4    filter=lfs diff=lfs merge=lfs -text
+*.mov    filter=lfs diff=lfs merge=lfs -text
+*.avi    filter=lfs diff=lfs merge=lfs -text
+*.webm   filter=lfs diff=lfs merge=lfs -text
+
+# -----------------------------------------------------------------------------
+# LFS  --  fonts, binaries, archives
+# -----------------------------------------------------------------------------
+# DEFERRED -- see note at end of file:  *.ttf         filter=lfs diff=lfs merge=lfs -text
+*.otf         filter=lfs diff=lfs merge=lfs -text
+# DEFERRED -- see note at end of file:  *.dll         filter=lfs diff=lfs merge=lfs -text
+*.so          filter=lfs diff=lfs merge=lfs -text
+*.dylib       filter=lfs diff=lfs merge=lfs -text
+*.a           filter=lfs diff=lfs merge=lfs -text
+*.lib         filter=lfs diff=lfs merge=lfs -text
+*.bundle      filter=lfs diff=lfs merge=lfs -text
+*.aar         filter=lfs diff=lfs merge=lfs -text
+*.jar         filter=lfs diff=lfs merge=lfs -text
+*.chm         filter=lfs diff=lfs merge=lfs -text
+*.zip         filter=lfs diff=lfs merge=lfs -text
+*.7z          filter=lfs diff=lfs merge=lfs -text
+*.rar         filter=lfs diff=lfs merge=lfs -text
+*.unitypackage filter=lfs diff=lfs merge=lfs -text
+
+# =============================================================================
+# DEFERRED LFS PATTERNS
+#
+# *.exr *.ttf *.pdf *.eps *.ai *.dll are commented out above, NOT forgotten.
+#
+# These formats are genuine binaries and belong in LFS. They are currently
+# committed as raw Git blobs, which bloats packfiles permanently. Routing them
+# into LFS would require uploading 40 new LFS objects (~70 MB), and this
+# repository is over its GitHub LFS budget, so all LFS writes are refused:
+#
+#   batch response: This repository exceeded its LFS budget.
+#
+# Leaving them as raw blobs is not a regression -- it is exactly their current
+# state. Uncomment these six lines once the LFS budget is restored, then run:
+#
+#   git add --renormalize .
+#
+# =============================================================================
