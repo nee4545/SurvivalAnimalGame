@@ -97,3 +97,18 @@ InitTestScene*.unity*
 
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+
+# -----------------------------------------------------------------------------
+# Generated bake output -- regenerate locally, never commit.
+# Assets/BakedGrassChunks is produced by Assets/Editor/GrassChunkBakerWindow.cs
+# (deterministic mesh-combine over sourceRoot; no RNG, no seed).
+# Re-bake: Window > Grass Chunk Baker, point sourceRoot at the grass hierarchy.
+# -----------------------------------------------------------------------------
+/[Aa]ssets/BakedGrassChunks/
+/[Aa]ssets/BakedGrassChunks.meta
+
+# -----------------------------------------------------------------------------
+# JetBrains Rider
+# -----------------------------------------------------------------------------
+.idea/
+*.csproj.DotSettings
