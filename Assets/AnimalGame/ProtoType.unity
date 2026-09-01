@@ -1282,7 +1282,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalPosition.z
-      value: 1
+      value: 19.700012
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalRotation.w
@@ -101158,7 +101158,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalPosition.z
-      value: -150
+      value: -171.59998
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalRotation.w
@@ -110725,7 +110725,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalPosition.z
-      value: 1
+      value: 19.700012
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalRotation.w
@@ -121326,7 +121326,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalPosition.z
-      value: 7
+      value: 25.700012
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalRotation.w
@@ -123760,7 +123760,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalPosition.z
-      value: -144
+      value: -165.59998
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalRotation.w
@@ -184397,7 +184397,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalPosition.z
-      value: -150
+      value: -171.59998
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalRotation.w
@@ -219381,7 +219381,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalPosition.z
-      value: 2
+      value: 20.7
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalRotation.w
@@ -237333,7 +237333,7 @@ MonoBehaviour:
   m_OverrideVoxelSize: 0
   m_VoxelSize: 0.13666667
   m_MinRegionArea: 2
-  m_NavMeshData: {fileID: 23800000, guid: 4fdf4fe775276f4468c4520e78ecb3cd, type: 2}
+  m_NavMeshData: {fileID: 23800000, guid: c9d843bf7536ec0478d0a323afeb8244, type: 2}
   m_BuildHeightMesh: 0
 --- !u!4 &1145877858
 Transform:
@@ -329331,7 +329331,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalPosition.z
-      value: -149
+      value: -170.6
       objectReference: {fileID: 0}
     - target: {fileID: 4000014192746172, guid: 41b656ace1fc7b544aac223a2f885bb8, type: 3}
       propertyPath: m_LocalRotation.w
@@ -450730,6 +450730,8 @@ MonoBehaviour:
   stopRiverScrollerOnRideExpire: 1
   expiredDismountForwardSpeed: 1.5
   expiredDismountUpSpeed: 1.2
+  allowCollisionJumpWhileMounted: 1
+  mountedCollisionJumpCooldown: 0.35
 --- !u!1 &1866587405890508435
 GameObject:
   m_ObjectHideFlags: 0
@@ -566656,6 +566658,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3da4b3e8f7a06f74493ef7aecdc96384, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  updateEveryFrameInPlayMode: 1
 --- !u!1 &7939400411222707931
 GameObject:
   m_ObjectHideFlags: 0
